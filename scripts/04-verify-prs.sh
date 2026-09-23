@@ -2,7 +2,7 @@
 # 04-verify-prs.sh — checks GitHub for PRs opened by Sentinel on all 9 repos.
 set -euo pipefail
 
-TOKEN=$(cd /home/z/my-project/repos/sentinel && git config --get remote.origin.url | sed -n 's|https://[^:]*:\([^@]*\)@.*|\1|p')
+TOKEN="${GITHUB_TOKEN:?Set GITHUB_TOKEN to a PAT with read access to marketly-org}"
 ORG="marketly-org"
 
 REPOS=(
