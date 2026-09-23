@@ -168,10 +168,40 @@ done
 
 kubectl apply -f helm/argocd-apps-eval.yaml
 
-echo "Waiting for Argo CD apps to sync + go healthy (up to 15 min)..."
-DEADLINE=$((SECONDS + 900))
+# Boot with ONE replica per service: the repo manifests say 3, and 27 service
+# pods + Argo CD + Postgres + Redis + ingress on a single 7GB kind node is
+# how run #1 starved. selfHeal is off, so this scale-down sticks; phase 6
+# raises services to $REPLICAS once everything is healthy.
+cap_replicas() {
+  for d in $(kubectl -n marketly get deploy -o name 2>/dev/null); do
+    case "$d" in
+      */ingress-nginx-controller|*/postgres|*/redis) continue ;;
+    esac
+    cur=$(kubectl -n marketly get "$d" -o jsonpath='{.spec.replicas}' 2>/dev/null || echo 1)
+    if [ "${cur:-1}" -gt 1 ] 2>/dev/null; then
+      kubectl -n marketly scale "$d" --replicas=1 >/dev/null 2>&1 || true
+    fi
+  done
+}
+cap_replicas
+
+dump_app_deep() {  # $1 = app name — pod states + waiting reasons + log tails
+  echo "  ---- $1: pods ----"
+  kubectl -n marketly get pods -l app="$1" -o \
+    custom-columns=NAME:.metadata.name,PHASE:.status.phase,READY:.status.containerStatuses[0].ready,RESTARTS:.status.containerStatuses[0].restartCount,REASON:.status.containerStatuses[0].state.waiting.reason \
+    2>/dev/null || echo "    (no pods)"
+  for p in $(kubectl -n marketly get pods -l app="$1" -o name 2>/dev/null); do
+    echo "  ---- $1: last log lines of ${p##*/} ----"
+    kubectl -n marketly logs "$p" --tail=12 2>&1 | sed 's/^/    /' || true
+  done
+}
+
+echo "Waiting for Argo CD apps to sync + go healthy (up to 20 min)..."
+DEADLINE=$((SECONDS + 1200))
 NOT_READY="pending"
+ITER=0
 while [ $SECONDS -lt $DEADLINE ]; do
+  cap_replicas
   NOT_READY=$(kubectl get applications -n argocd -o json | python3 -c '
 import json, sys
 try:
@@ -190,6 +220,19 @@ print(" ".join(bad))
     break
   fi
   echo "  not ready yet (${NOT_READY})"
+  ITER=$((ITER + 1))
+  # Every ~60s: overall pod table + runner memory (OOM evidence)
+  if [ $((ITER % 3)) -eq 0 ]; then
+    echo "  [diag] runner memory: $(free -m | awk 'NR==2{printf "%s/%s MB used", $3, $2}')  disk: $(df -h / | awk 'NR==2{print $3 " used"}')"
+    kubectl -n marketly get pods 2>/dev/null | awk 'NR>1{printf "    %-52s %-10s restarts=%s\n", $1, $3, $4}' | head -30
+  fi
+  # Every ~90s: deep dive each still-unhealthy app (pod reasons + logs)
+  if [ $((ITER % 4)) -eq 0 ]; then
+    for a in $NOT_READY; do
+      [ "$a" = "parse-error" ] && continue
+      dump_app_deep "$a"
+    done
+  fi
   sleep 20
 done
 
@@ -198,10 +241,26 @@ if [ -n "$NOT_READY" ]; then
 import json, sys
 data = json.load(sys.stdin)
 print(sum(1 for it in data.get("items", []) if it.get("status", {}).get("health", {}).get("status") == "Healthy"))')
-  echo "  WARNING: $HEALTHY/9 apps healthy after 15 min"
-  kubectl get applications -n argocd || true
+  echo "  WARNING: $HEALTHY/9 apps healthy after 20 min"
+  # Full self-diagnosis: everything needed to explain a stuck app, both to
+  # the console and to the artifacts bundle.
+  {
+    echo "===== pods -o wide (marketly) ====="
+    kubectl -n marketly get pods -o wide 2>&1
+    echo; echo "===== unhealthy events (last 5m, marketly) ====="
+    kubectl -n marketly get events --sort-by=.lastTimestamp 2>&1 | tail -40
+    echo; echo "===== node ====="
+    kubectl describe node 2>&1 | sed -n '1,45p'
+    echo; echo "===== argocd app health ====="
+    kubectl get applications -n argocd -o \
+      custom-columns=NAME:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status 2>&1
+    echo; echo "===== per-app deep ====="
+    for a in $NOT_READY; do dump_app_deep "$a"; done
+    echo; echo "===== runner resources ====="
+    free -m; df -h / /var/lib/docker 2>&1 | head -6
+  } | tee "$ART/phase5-stuck-diagnostics.txt"
   if [ "$HEALTHY" -lt 6 ]; then
-    echo "FAIL: fewer than 6 apps healthy — harness issue"
+    echo "FAIL: fewer than 6 apps healthy — harness issue (see diagnostics above)"
     exit 1
   fi
 fi

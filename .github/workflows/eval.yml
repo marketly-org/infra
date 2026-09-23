@@ -99,7 +99,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Dump cluster diagnostics
-        if: failure()
+        if: failure() || cancelled()
         run: |
           echo "=== pods (all) ==="
           kubectl get pods -A -o wide || true
