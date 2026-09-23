@@ -13,7 +13,8 @@
 #   4. Install ingress-nginx
 #   5. Install Argo CD, wire git credentials, sync all 9 services
 #   6. Scale services to $REPLICAS (fit the single kind node)
-#   7. Install Sentinel (chart 1.7.0) with Groq + GitHub token
+#   6.5. Environment tuning (cap user-api heap so the leak OOMs in-window)
+#   7. Install Sentinel (chart $SENTINEL_CHART_VERSION) with Groq + GitHub token
 #   8. Start traffic + soak for $WAIT_MINUTES, snapshotting state
 #   9. Score Sentinel's PRs vs ground truth, write step summary + artifacts
 #  10. Reset service repos to pre-eval SHAs (default on)
@@ -45,6 +46,7 @@ MIN_SANDBOX_LEVEL="${MIN_SANDBOX_LEVEL:-3}"
 RESET_REPOS="${RESET_REPOS:-true}"
 FAST_MODEL="${FAST_MODEL:-openai/gpt-oss-20b}"
 FRONTIER_MODEL="${FRONTIER_MODEL:-openai/gpt-oss-120b}"
+SENTINEL_CHART_VERSION="${SENTINEL_CHART_VERSION:-1.7.1}"
 SENTINEL_API_TOKEN="marketly-sentinel-token"
 
 # Guard rails
@@ -290,8 +292,22 @@ for d in $(kubectl -n marketly get deploy -o name); do
 done
 echo "  scaled (Argo selfHeal is off in the eval apps so this sticks)"
 
+# ---------------------------------------------------------------- phase 6.5
+log "Phase 6.5/10: environment tuning (accelerate the memory-leak bug)"
+# Run #7 post-mortem: user-api's token Map grows ~400B per login. At the
+# hammer's ~160 logins/s that is ~64MB in 7 minutes — invisible against
+# Node's cgroup-defaulted ~128MB heap (container limit 256Mi). Cap the
+# heap so the planted leak reaches the heap limit inside the soak window
+# and produces the ground-truth `FATAL ERROR: Ineffective mark-compacts`
+# (plus a restart, which the pod-status detector sees).
+# This patches ENVIRONMENT (a standard ops knob), not the bug: the leak,
+# the code, and the fix Sentinel must produce are unchanged.
+kubectl -n marketly set env deploy/user-api NODE_OPTIONS="--max-old-space-size=64"
+kubectl -n marketly rollout status deploy/user-api --timeout=240s
+echo "  user-api heap capped at 64MB (NODE_OPTIONS)"
+
 # ---------------------------------------------------------------- phase 7
-log "Phase 7/10: Sentinel (chart 1.7.0, provider=groq)"
+log "Phase 7/10: Sentinel (chart $SENTINEL_CHART_VERSION, provider=groq)"
 
 # Fail fast if the configured Groq models no longer exist (run 35890547218
 # lost a full 40-min eval to a deprecated model name: every investigation
@@ -324,7 +340,7 @@ helm repo add sentinel https://karimzakzouk.github.io/sentinel/ 2>/dev/null || t
 helm repo update >/dev/null
 helm upgrade --install sentinel sentinel/sentinel \
   --namespace sentinel --create-namespace \
-  --version 1.7.0 \
+  --version "$SENTINEL_CHART_VERSION" \
   --values helm/sentinel-values.yaml \
   --set sentinel.githubToken="$GITHUB_TOKEN" \
   --set sentinel.llm.apiKey="$GROQ_API_KEY" \
@@ -386,8 +402,18 @@ print(f"  total incidents: {len(inc)}")'
 SOAK_END=$((SECONDS + WAIT_MINUTES * 60))
 NEXT_INC=$((SECONDS + 10))
 NEXT_DIAG=$((SECONDS + 60))
+NEXT_RESTOCK=$((SECONDS + 60))
 while [ $SECONDS -lt $SOAK_END ]; do
   sleep 10
+  # Replenish inventory availability every 60s: reserve-only traffic
+  # burns reserved capacity to zero in ~1 minute, after which everything
+  # 409s and (a) checkout's chain stalls at reserve and (b) the oversell
+  # race never gets another boundary to fire on.
+  if [ $SECONDS -ge $NEXT_RESTOCK ]; then
+    NEXT_RESTOCK=$((SECONDS + 60))
+    kubectl -n marketly exec deploy/postgres -- env PGPASSWORD=marketly-eval \
+      psql -U marketly -d inventory -c "UPDATE products SET reserved = 0" >/dev/null 2>&1 || true
+  fi
   if [ $SECONDS -ge $NEXT_INC ]; then
     NEXT_INC=$((SECONDS + 300))
     LEFT=$(( (SOAK_END - SECONDS + 59) / 60 ))
@@ -429,6 +455,47 @@ for D in checkout-api payments-api inventory-api user-api search-api \
   kubectl -n marketly logs "deploy/$D" --tail=80 \
     > "$ART/svclog-$D.txt" 2>&1 || true
 done
+
+# Bug-fired signature matrix: did each planted bug actually produce its
+# failure signature during the soak? Run #7 scored 1/9 detection, but the
+# artifacts later showed 7 of the bugs had never fired at all — without
+# this matrix, "Sentinel missed it" and "harness never triggered it" look
+# identical in the score table.
+{
+  echo "=== Bug-fired signature matrix (from svclog tails) ==="
+  printf "%-24s %-8s %s\n" "SERVICE" "FIRED?" "SIGNATURE"
+  printf "%-24s %-8s %s\n" "-------" "-----" "---------"
+  declare -A SIG=(
+    [checkout-api]="MemoryError|pool exhausted"
+    [payments-api]="rate_limited"
+    [inventory-api]="index out of range"
+    [user-api]="Ineffective mark-compacts|FATAL ERROR"
+    [search-api]="panicked at"
+    [shipping-api]="NoSuchElementException"
+    [analytics-worker]="could not acquire lock|deadlock"
+    [notification-worker]="send_email.failed|gaierror"
+    [recommendation-engine]="Segmentation fault|SIGSEGV"
+  )
+  for D in checkout-api payments-api inventory-api user-api search-api \
+           shipping-api analytics-worker notification-worker recommendation-engine; do
+    PAT="${SIG[$D]}"
+    if grep -qE "$PAT" "$ART/svclog-$D.txt" 2>/dev/null; then
+      printf "%-24s %-8s %s\n" "$D" "YES" "$PAT"
+    else
+      printf "%-24s %-8s %s\n" "$D" "no" "$PAT"
+    fi
+  done
+  # Silent-bug check: inventory oversell leaves no log and no crash — the
+  # only evidence is reserved > stock in the DB.
+  OVERSOLD=$(kubectl -n marketly exec deploy/postgres -- env PGPASSWORD=marketly-eval \
+    psql -U marketly -d inventory -tAc \
+    "SELECT count(*) FROM products WHERE reserved > stock" 2>/dev/null || echo "")
+  if [ "${OVERSOLD:-0}" -gt 0 ] 2>/dev/null; then
+    echo "inventory-api           OVERSOLD  reserved > stock on $OVERSOLD product(s) — silent bug FIRED"
+  else
+    echo "inventory-api           -        (oversell not observed: reserved <= stock)"
+  fi
+} | tee "$ART/bug-fired-matrix.txt"
 
 echo
 echo "PR verification (scripts/04-verify-prs.sh):"

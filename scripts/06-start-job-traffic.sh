@@ -51,7 +51,12 @@ spec:
               while true; do
                 i=\$((i + 1))
                 JID=\$( (echo \$i; date +%s%N) | md5sum | cut -c1-24)
-                TS=\$(date +%s.%3N)
+                # NOTE: integer epoch only — busybox date has no %N/%3N
+                # fractional support, and run #7's "date +%s.%3N" produced
+                # TS="1790192939." → invalid JSON → every job died at
+                # parse ("Invalid JSON for job") and the deadlock bug was
+                # never exercised.
+                TS=\$(date +%s)
                 # OrderWorker: OrderLock -> InventoryLock (correct order)
                 redis-cli -h ${REDIS_HOST} -a ${REDIS_PASS} --no-auth-warning LPUSH queue:orders \\
                   "{\"class\":\"Analytics::Workers::OrderWorker\",\"args\":[{\"id\":\"ord-inj-\$i\",\"user_id\":1,\"total_cents\":1999,\"items\":[{\"sku\":\"WIDGET-001\",\"quantity\":1}],\"placed_at\":\"2026-01-01T00:00:00Z\"}],\"queue\":\"orders\",\"jid\":\"\$JID\",\"created_at\":\$TS,\"enqueued_at\":\$TS,\"retry\":true}" >/dev/null
@@ -220,10 +225,31 @@ spec:
               GRPC="grpcurl -plaintext -max-time 5 -import-path /protos -proto recommendation.proto"
               TARGET="recommendation-engine.${NS}.svc.cluster.local:50051"
               SVC="marketly.recommendation.v1.RecommendationService"
+              # Run #7 post-mortem: the injector swallowed all output
+              # (>/dev/null 2>&1 || true) so there was no way to tell
+              # whether the calls were even reaching the engine. Log a
+              # Health check up front and keep per-loop counters.
+              echo "grpc-injector: probing Health on \$TARGET ..."
+              if \$GRPC -d '{}' "\$TARGET" "\$SVC/Health" 2>&1; then
+                echo "grpc-injector: Health OK"
+              else
+                echo "grpc-injector: Health FAILED (proto/service/port mismatch?)"
+              fi
+              ok=0 fail=0
               recommender() {
                 while true; do
-                  \$GRPC -d '{"user_id":"load-'"\$1"'","limit":20}' \\
-                    "\$TARGET" "\$SVC/GetRecommendations" >/dev/null 2>&1 || true
+                  if \$GRPC -d '{"user_id":"load-'"\$1"'","limit":20}' \\
+                    "\$TARGET" "\$SVC/GetRecommendations" >/dev/null 2>&1; then
+                    ok=\$((ok + 1))
+                  else
+                    fail=\$((fail + 1))
+                  fi
+                  # Progress line every 100 calls so the artifacts show
+                  # whether traffic is flowing (and at what error rate).
+                  total=\$((ok + fail))
+                  if [ \$((total % 100)) -eq 0 ]; then
+                    echo "grpc-injector: \$total calls (ok=\\$ok fail=\\$fail)"
+                  fi
                 done
               }
               appender() {
@@ -232,13 +258,16 @@ spec:
                   i=\$((i + 1))
                   \$GRPC -d '{"item":{"sku":"INJ-'\$i'","name":"Injected item","category":"toys","score":0.9,"price_cents":999}}' \\
                     "\$TARGET" "\$SVC/AppendItem" >/dev/null 2>&1 || true
-                  sleep 0.2
+                  sleep 0.1
                 done
               }
               recommender a &
               recommender b &
               recommender c &
               recommender d &
+              recommender e &
+              recommender f &
+              appender &
               appender
           volumeMounts:
             - name: protos
