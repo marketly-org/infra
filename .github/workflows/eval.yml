@@ -29,11 +29,11 @@ on:
         description: "Reset service repos to pre-eval SHAs afterwards (true/false)"
         default: "true"
       fast_model:
-        description: "Groq fast model"
-        default: "llama-3.1-8b-instant"
+        description: "Groq model for fast/aux LLM calls"
+        default: "openai/gpt-oss-20b"
       frontier_model:
-        description: "Groq frontier model"
-        default: "llama-3.3-70b-versatile"
+        description: "Groq model for investigation reasoning (70B-class)"
+        default: "openai/gpt-oss-120b"
 
 concurrency:
   group: marketly-eval

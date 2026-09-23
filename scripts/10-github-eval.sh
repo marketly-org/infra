@@ -43,8 +43,8 @@ WAIT_MINUTES="${WAIT_MINUTES:-45}"
 REPLICAS="${REPLICAS:-2}"
 MIN_SANDBOX_LEVEL="${MIN_SANDBOX_LEVEL:-3}"
 RESET_REPOS="${RESET_REPOS:-true}"
-FAST_MODEL="${FAST_MODEL:-llama-3.1-8b-instant}"
-FRONTIER_MODEL="${FRONTIER_MODEL:-llama-3.3-70b-versatile}"
+FAST_MODEL="${FAST_MODEL:-openai/gpt-oss-20b}"
+FRONTIER_MODEL="${FRONTIER_MODEL:-openai/gpt-oss-120b}"
 SENTINEL_API_TOKEN="marketly-sentinel-token"
 
 # Guard rails
@@ -292,6 +292,34 @@ echo "  scaled (Argo selfHeal is off in the eval apps so this sticks)"
 
 # ---------------------------------------------------------------- phase 7
 log "Phase 7/10: Sentinel (chart 1.7.0, provider=groq)"
+
+# Fail fast if the configured Groq models no longer exist (run 35890547218
+# lost a full 40-min eval to a deprecated model name: every investigation
+# died at round 1 with "model does not exist").
+echo "  validating Groq models (frontier=$FRONTIER_MODEL fast=$FAST_MODEL)..."
+MODELS_JSON=$(curl -s -H "Authorization: Bearer $GROQ_API_KEY" \
+  https://api.groq.com/openai/v1/models)
+MODELS_LIST=$(printf '%s' "$MODELS_JSON" | python3 -c '
+import json, sys
+try:
+    print("\n".join(m["id"] for m in json.load(sys.stdin).get("data", [])))
+except Exception:
+    print("")')
+if [ -z "$MODELS_LIST" ]; then
+  echo "  ERROR: could not list Groq models. Raw response:"
+  printf '%s\n' "$MODELS_JSON" | head -c 500; echo
+  exit 1
+fi
+echo "  available: $(echo "$MODELS_LIST" | tr '\n' ' ')"
+for M in "$FRONTIER_MODEL" "$FAST_MODEL"; do
+  if ! echo "$MODELS_LIST" | grep -qx "$M"; then
+    echo "  FAIL: model '$M' is not available to this key (deprecated? renamed?)"
+    echo "  Pick from the list above and re-dispatch with fast_model/frontier_model inputs."
+    exit 1
+  fi
+done
+echo "  both models available"
+
 helm repo add sentinel https://karimzakzouk.github.io/sentinel/ 2>/dev/null || true
 helm repo update >/dev/null
 helm upgrade --install sentinel sentinel/sentinel \
@@ -390,6 +418,17 @@ kubectl get pods -n marketly > "$ART/pods-final.txt" 2>&1 || true
 kubectl get applications -n argocd > "$ART/argocd-apps-final.txt" 2>&1 || true
 kubectl -n sentinel logs -l app.kubernetes.io/name=sentinel --tail=1000 \
   > "$ART/sentinel-log-final.txt" 2>&1 || true
+
+# Per-service + injector log tails: shows whether the planted bugs actually
+# produced their failure signatures (SMTP refusals, segfault, deadlock,
+# NoSuchElementException) even when the detector missed them.
+for D in checkout-api payments-api inventory-api user-api search-api \
+         shipping-api analytics-worker notification-worker \
+         recommendation-engine traffic-gen login-hammer \
+         sidekiq-injector celery-injector grpc-injector; do
+  kubectl -n marketly logs "deploy/$D" --tail=80 \
+    > "$ART/svclog-$D.txt" 2>&1 || true
+done
 
 echo
 echo "PR verification (scripts/04-verify-prs.sh):"

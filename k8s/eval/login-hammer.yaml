@@ -46,7 +46,7 @@ spec:
                       --post-data='{"email":"loadtest'"$i"'@example.com","password":"test-password"}' \
                       --header='Content-Type: application/json' \
                       http://user-api.marketly.svc.cluster.local:8080/auth/login || true
-                    sleep 0.05
+                    sleep 0.3
                   done
                 ) &
               done
