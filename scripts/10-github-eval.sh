@@ -88,10 +88,14 @@ PG_HOST=postgres.marketly.svc.cluster.local
 REDIS_PASS=marketly-eval
 REDIS_HOST=redis.marketly.svc.cluster.local
 
+# Go services (payments, inventory) use lib/pq, which defaults to
+# sslmode=require; the in-cluster Postgres has no TLS, so those two URLs
+# must opt out explicitly. Python (psycopg2) and Ruby (pg) default to
+# prefer and fall back to plaintext on their own.
 kubectl -n marketly create secret generic marketly-db-credentials \
   --from-literal=checkout-url="postgresql://$PG_USER:$PG_PASS@$PG_HOST:5432/checkout" \
-  --from-literal=payments-url="postgresql://$PG_USER:$PG_PASS@$PG_HOST:5432/payments" \
-  --from-literal=inventory-url="postgresql://$PG_USER:$PG_PASS@$PG_HOST:5432/inventory" \
+  --from-literal=payments-url="postgresql://$PG_USER:$PG_PASS@$PG_HOST:5432/payments?sslmode=disable" \
+  --from-literal=inventory-url="postgresql://$PG_USER:$PG_PASS@$PG_HOST:5432/inventory?sslmode=disable" \
   --from-literal=users-url="postgresql://$PG_USER:$PG_PASS@$PG_HOST:5432/users" \
   --from-literal=shipping-url="postgresql://$PG_USER:$PG_PASS@$PG_HOST:5432/shipping" \
   --from-literal=search-url="postgresql://$PG_USER:$PG_PASS@$PG_HOST:5432/search" \
@@ -192,7 +196,7 @@ dump_app_deep() {  # $1 = app name — pod states + waiting reasons + log tails
     2>/dev/null || echo "    (no pods)"
   for p in $(kubectl -n marketly get pods -l app="$1" -o name 2>/dev/null); do
     echo "  ---- $1: last log lines of ${p##*/} ----"
-    kubectl -n marketly logs "$p" --tail=12 2>&1 | sed 's/^/    /' || true
+    kubectl -n marketly logs "$p" --tail=40 2>&1 | sed 's/^/    /' || true
   done
 }
 
@@ -211,7 +215,10 @@ except Exception:
 bad = []
 for it in data.get("items", []):
     st = it.get("status", {})
-    if st.get("health", {}).get("status") != "Healthy" or st.get("sync", {}).get("status") != "Synced":
+    # Readiness gates on HEALTH only. cap_replicas scales every service
+    # down to 1 during boot, which leaves apps permanently OutOfSync
+    # (selfHeal is off so it sticks) — sync status must not gate the loop.
+    if st.get("health", {}).get("status") != "Healthy":
         bad.append(it["metadata"]["name"])
 print(" ".join(bad))
 ' || echo "error")
