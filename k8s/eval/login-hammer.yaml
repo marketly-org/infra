@@ -29,13 +29,23 @@ spec:
           command: ["/bin/sh", "-c"]
           args:
             - |
+              # Login requires a real user (bcrypt vs DB), so register the
+              # load-test users once, then hammer /auth/login: every
+              # successful login issues a NEW refresh token into the
+              # unbounded Map — that is the leak.
+              for i in $(seq 1 8); do
+                wget -q -O /dev/null \
+                  --post-data='{"email":"loadtest'"$i"'@example.com","password":"test-password","name":"Load Test '"$i"'"}' \
+                  --header='Content-Type: application/json' \
+                  http://user-api.marketly.svc.cluster.local:8080/auth/register || true
+              done
               for i in $(seq 1 8); do
                 (
                   while true; do
                     wget -q -O /dev/null \
                       --post-data='{"email":"loadtest'"$i"'@example.com","password":"test-password"}' \
                       --header='Content-Type: application/json' \
-                      http://ingress-nginx-controller.marketly.svc.cluster.local/auth/login || true
+                      http://user-api.marketly.svc.cluster.local:8080/auth/login || true
                     sleep 0.05
                   done
                 ) &

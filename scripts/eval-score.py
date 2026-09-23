@@ -2,10 +2,15 @@
 """Score Sentinel's marketly eval PRs against ground-truth fix patterns.
 
 Reads eval-artifacts/incidents.json (incident status/confidence per service)
-and queries the GitHub API for the most recent Sentinel PR on each of the 9
-service repos, then checks whether the PR diff contains the expected fix
-pattern (same table as scripts/04-verify-prs.sh, which stays the
-human-readable reference).
+and queries the GitHub API for Sentinel PRs opened DURING this eval run on
+each of the 9 service repos, then checks whether the PR diff contains the
+expected fix pattern (same table as scripts/04-verify-prs.sh, which stays
+the human-readable reference).
+
+Only PRs created after $EVAL_RUN_START (set by 10-github-eval.sh at run
+start) are counted — a stale PR from an earlier run must never inflate
+the score (this happened in the 2026-09-23 run: year-old PRs scored 5/9
+on a zero-incident run).
 
 Writes:
   <art_dir>/score.json  — structured results
@@ -38,6 +43,18 @@ EXPECTED = {
 }
 
 TOKEN = os.environ.get("GITHUB_TOKEN", "")
+# ISO-8601 timestamp recorded when the eval driver started. PRs created
+# before this are from earlier runs and must be ignored.
+RUN_START = os.environ.get("EVAL_RUN_START", "")
+
+
+def _parse_ts(ts):
+    """'2026-09-23T16:41:57Z' -> epoch seconds (0 if unparseable)."""
+    import datetime
+    try:
+        return datetime.datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return 0.0
 
 
 def api(url, accept="application/vnd.github+json"):
@@ -58,10 +75,12 @@ def load_incidents(art_dir):
     out = {}
     try:
         with open(os.path.join(art_dir, "incidents.json")) as f:
-            for inc in json.load(f):
-                svc = (inc.get("cluster") or {}).get("service", "?")
-                if svc not in out:
-                    out[svc] = inc
+            data = json.load(f)
+        # The Sentinel API marshals an empty incident list as JSON null.
+        for inc in data or []:
+            svc = (inc.get("cluster") or {}).get("service", "?")
+            if svc not in out:
+                out[svc] = inc
     except Exception:
         pass
     return out
@@ -84,10 +103,14 @@ def main(art_dir):
         try:
             prs = json.loads(api(
                 f"https://api.github.com/repos/{ORG}/{repo}/pulls"
-                "?state=all&per_page=10&sort=created&direction=desc"))
+                "?state=all&per_page=20&sort=created&direction=desc"))
+            cutoff = _parse_ts(RUN_START)
             pr = next(
                 (p for p in prs
-                 if "sentinel" in (p.get("title") or "").lower()), None)
+                 if "sentinel" in (p.get("title") or "").lower()
+                 and (p.get("head") or {}).get("ref", "").startswith("sentinel/")
+                 and (not cutoff or _parse_ts(p.get("created_at") or "") >= cutoff - 60)),
+                None)
             if pr:
                 pr_num = pr["number"]
                 pr_title = pr["title"]
@@ -119,7 +142,6 @@ def main(art_dir):
             "fix_matches": fix_match,
             "note": note,
         })
-
     with open(os.path.join(art_dir, "score.json"), "w") as f:
         json.dump({"matched": matched, "total": len(REPOS), "rows": rows}, f, indent=2)
 

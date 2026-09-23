@@ -39,12 +39,24 @@ for REPO in "${REPOS[@]}"; do
   PR_DATA=$(curl -sf -H "Authorization: token $TOKEN" -H "Accept: application/vnd.github+json" \
     "https://api.github.com/repos/$ORG/$REPO/pulls?state=all&per_page=10&sort=created&direction=desc" 2>/dev/null || echo "[]")
 
-  # Find the most recent Sentinel PR
+  # Find the most recent Sentinel PR opened during THIS eval run.
+  # EVAL_RUN_START (exported by 10-github-eval.sh) guards against stale
+  # PRs from earlier runs inflating the score.
   PR_INFO=$(echo "$PR_DATA" | python3 -c "
-import json, sys
+import json, sys, os, datetime
+
+def ts(s):
+    try:
+        return datetime.datetime.fromisoformat(s.replace('Z', '+00:00')).timestamp()
+    except Exception:
+        return 0.0
+
+cutoff = ts(os.environ.get('EVAL_RUN_START', '')) - 60
 prs = json.load(sys.stdin)
 for pr in prs:
-    if 'Sentinel' in pr.get('title', '') or 'sentinel' in pr.get('title', '').lower():
+    if 'sentinel' in pr.get('title', '').lower() \
+       and (pr.get('head') or {}).get('ref', '').startswith('sentinel/') \
+       and (not cutoff or ts(pr.get('created_at') or '') >= cutoff):
         print(f'{pr[\"number\"]}|{pr[\"title\"]}|{pr[\"html_url\"]}')
         break
 else:

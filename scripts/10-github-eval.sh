@@ -55,6 +55,14 @@ WAIT_MINUTES=$(( WAIT_MINUTES > 240 ? 240 : WAIT_MINUTES ))
 
 mkdir -p "$ART"
 
+# Timestamp of run start — eval-score.py / 04-verify-prs.sh only count
+# Sentinel PRs created after this moment. A stale PR from an earlier run
+# must never inflate the score (the 2026-09-23 run scored 5/9 on year-old
+# leftover PRs during a zero-incident soak).
+export EVAL_RUN_START
+EVAL_RUN_START="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo "Eval run started at $EVAL_RUN_START (stale-PR cutoff)"
+
 log() { echo; echo "=== $* ==="; }
 
 api() {
@@ -303,6 +311,9 @@ echo "  sentinel installed"
 log "Phase 8/10: traffic + ${WAIT_MINUTES}m soak"
 bash scripts/02-start-traffic.sh
 kubectl apply -f k8s/eval/login-hammer.yaml
+# Worker-queue + gRPC injectors: Sidekiq orders/payments (analytics deadlock),
+# Celery notifications (SMTP failures), gRPC recommend+append (segfault race).
+bash scripts/06-start-job-traffic.sh
 
 PF_PID=""
 pf_start() {
@@ -330,7 +341,7 @@ print_incidents() {
   python3 -c '
 import json, sys
 try:
-    inc = json.load(sys.stdin)
+    inc = json.load(sys.stdin) or []   # empty list marshals as JSON null
 except Exception:
     print("  (unparseable incident JSON)"); raise SystemExit
 for i in inc:
@@ -405,7 +416,7 @@ fi
 TOTAL=$(python3 -c '
 import json
 try:
-    print(len(json.load(open("'"$ART"'/incidents.json"))))
+    print(len(json.load(open("'"$ART"'/incidents.json")) or []))  # null = 0
 except Exception:
     print(0)')
 if [ "$TOTAL" -eq 0 ]; then
