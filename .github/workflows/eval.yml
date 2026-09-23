@@ -1,7 +1,7 @@
 name: Sentinel Eval (kind)
 
 # Investigation-quality eval, no Azure required: a kind cluster is born and
-# dies inside this job. Sentinel 1.7.0 (released helm chart + image) watches
+# dies inside this job. Sentinel (released helm chart + image) watches
 # the 9 marketly services, investigates real incidents with Groq, opens PRs;
 # scripts/eval-score.py scores them against ground truth.
 #
@@ -34,6 +34,9 @@ on:
       frontier_model:
         description: "Groq model for investigation reasoning (70B-class)"
         default: "openai/gpt-oss-120b"
+      sentinel_chart_version:
+        description: "Sentinel helm chart version to install"
+        default: "1.7.1"
 
 concurrency:
   group: marketly-eval
@@ -88,6 +91,7 @@ jobs:
           RESET_REPOS: ${{ inputs.reset_repos }}
           FAST_MODEL: ${{ inputs.fast_model }}
           FRONTIER_MODEL: ${{ inputs.frontier_model }}
+          SENTINEL_CHART_VERSION: ${{ inputs.sentinel_chart_version }}
         run: bash scripts/10-github-eval.sh
 
       - name: Upload eval artifacts

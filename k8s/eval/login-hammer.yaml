@@ -33,28 +33,28 @@ spec:
               # load-test users once, then hammer /auth/login: every
               # successful login issues a NEW refresh token into the
               # unbounded Map — that is the leak.
-              for i in $(seq 1 8); do
+              for i in $(seq 1 16); do
                 wget -q -O /dev/null \
                   --post-data='{"email":"loadtest'"$i"'@example.com","password":"test-password","name":"Load Test '"$i"'"}' \
                   --header='Content-Type: application/json' \
                   http://user-api.marketly.svc.cluster.local:8080/auth/register || true
               done
-              for i in $(seq 1 8); do
+              for i in $(seq 1 16); do
                 (
                   while true; do
                     wget -q -O /dev/null \
                       --post-data='{"email":"loadtest'"$i"'@example.com","password":"test-password"}' \
                       --header='Content-Type: application/json' \
                       http://user-api.marketly.svc.cluster.local:8080/auth/login || true
-                    sleep 0.3
+                    sleep 0.1
                   done
                 ) &
               done
               wait
           resources:
             requests:
-              cpu: 50m
-              memory: 16Mi
+              cpu: 100m
+              memory: 32Mi
             limits:
-              cpu: 300m
-              memory: 64Mi
+              cpu: 500m
+              memory: 128Mi
