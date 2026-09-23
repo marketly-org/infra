@@ -1,0 +1,98 @@
+# In-cluster Postgres for the GitHub Actions (kind) eval.
+# Replaces Azure Database for PostgreSQL from the AKS path.
+#
+# - Service name `postgres` in namespace `marketly` matches the hardcoded
+#   POSTGRES_HOST in analytics-worker's deployment.
+# - analytics-worker expects user/pass in separate keys (analytics-user /
+#   analytics-password), other services use URL keys — both point at the
+#   same single-tenant credentials below.
+# - Services create their own schema on boot (CREATE TABLE IF NOT EXISTS),
+#   so an empty database per service is sufficient.
+# - No PersistentVolume: the eval is single-run and ephemeral by design.
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-credentials
+  namespace: marketly
+stringData:
+  POSTGRES_USER: marketly
+  POSTGRES_PASSWORD: marketly-eval
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-initdb
+  namespace: marketly
+data:
+  init.sql: |
+    -- One database per service (URL keys of marketly-db-credentials).
+    CREATE DATABASE checkout;
+    CREATE DATABASE payments;
+    CREATE DATABASE inventory;
+    CREATE DATABASE users;
+    CREATE DATABASE shipping;
+    CREATE DATABASE search;
+    CREATE DATABASE recommendation;
+    CREATE DATABASE notifications;
+    CREATE DATABASE workers;
+    -- analytics-worker connects with POSTGRES_DB=marketly_analytics
+    CREATE DATABASE marketly_analytics;
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: marketly
+  labels:
+    app: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          envFrom:
+            - secretRef:
+                name: postgres-credentials
+          args: ["-c", "shared_buffers=64MB"]
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: initdb
+              mountPath: /docker-entrypoint-initdb.d
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "marketly"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: initdb
+          configMap:
+            name: postgres-initdb
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: marketly
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432

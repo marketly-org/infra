@@ -1,0 +1,111 @@
+name: Sentinel Eval (kind)
+
+# Investigation-quality eval, no Azure required: a kind cluster is born and
+# dies inside this job. Sentinel 1.7.0 (released helm chart + image) watches
+# the 9 marketly services, investigates real incidents with Groq, opens PRs;
+# scripts/eval-score.py scores them against ground truth.
+#
+# Secrets required (repo Settings → Secrets → Actions):
+#   MARKETLY_GITHUB_TOKEN  PAT with repo + read:packages on marketly-org
+#                          (clone for investigation, open/merge PRs, reset)
+#   GROQ_API_KEY           Groq API key
+#
+# Run #1 is a shakeout run: expect to iterate on boot/trigger issues before
+# scores become meaningful. Costs ~60-110 runner-minutes per run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      wait_minutes:
+        description: "Soak window (minutes) after traffic starts"
+        default: "45"
+      replicas:
+        description: "Replicas per service after Argo sync"
+        default: "2"
+      min_sandbox_level:
+        description: "autoMerge minimum sandbox level (drop to 1 if sandbox can't complete in kind)"
+        default: "3"
+      reset_repos:
+        description: "Reset service repos to pre-eval SHAs afterwards (true/false)"
+        default: "true"
+      fast_model:
+        description: "Groq fast model"
+        default: "llama-3.1-8b-instant"
+      frontier_model:
+        description: "Groq frontier model"
+        default: "llama-3.3-70b-versatile"
+
+concurrency:
+  group: marketly-eval
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  eval:
+    name: Detect → Investigate → PR → Score
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ fromJSON(inputs.wait_minutes) + 75 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate kind config (GHCR node-level pull auth)
+        env:
+          GHCR_TOKEN: ${{ secrets.MARKETLY_GITHUB_TOKEN }}
+        run: |
+          # The 9 service images are private on GHCR and their k8s manifests
+          # carry no imagePullSecrets — authenticating the node's containerd
+          # is the one place that solves every pull (including pods synced
+          # later by Argo CD after a fix merges).
+          cat > kind-config.yaml <<EOF
+          kind: Cluster
+          apiVersion: kind.x-k8s.io/v1alpha4
+          containerdConfigPatches:
+          - |-
+            [plugins."io.containerd.grpc.v1.cri".registry.configs."ghcr.io".auth]
+              username = "karimzakzouk"
+              password = "${GHCR_TOKEN}"
+          EOF
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: marketly-eval
+          config: kind-config.yaml
+          wait: 60s
+
+      - name: Run eval
+        env:
+          GITHUB_TOKEN: ${{ secrets.MARKETLY_GITHUB_TOKEN }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          WAIT_MINUTES: ${{ inputs.wait_minutes }}
+          REPLICAS: ${{ inputs.replicas }}
+          MIN_SANDBOX_LEVEL: ${{ inputs.min_sandbox_level }}
+          RESET_REPOS: ${{ inputs.reset_repos }}
+          FAST_MODEL: ${{ inputs.fast_model }}
+          FRONTIER_MODEL: ${{ inputs.frontier_model }}
+        run: bash scripts/10-github-eval.sh
+
+      - name: Upload eval artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results
+          path: eval-artifacts/
+          if-no-files-found: ignore
+
+      - name: Dump cluster diagnostics
+        if: failure()
+        run: |
+          echo "=== pods (all) ==="
+          kubectl get pods -A -o wide || true
+          echo "=== argocd apps ==="
+          kubectl get applications -n argocd || true
+          echo "=== marketly pod describes ==="
+          for p in $(kubectl -n marketly get pod -o name 2>/dev/null); do
+            echo "--- $p ---"
+            kubectl -n marketly describe "$p" 2>/dev/null | tail -30 || true
+          done
+          echo "=== sentinel logs ==="
+          kubectl -n sentinel logs -l app.kubernetes.io/name=sentinel --tail=200 2>/dev/null || true

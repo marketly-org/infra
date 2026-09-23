@@ -1,0 +1,50 @@
+# Accelerated /auth/login load for the GitHub Actions (kind) eval.
+#
+# The stock traffic generator (scripts/02-start-traffic.sh) hits /auth/login
+# ~2x/second, which would take many hours to grow user-api's token Map to
+# the OOM threshold even with --max-old-space-size=128. This deployment
+# raises login concurrency (~30-60 req/s) so the memory-leak incident fires
+# inside the eval's soak window. It only adds load — the bug is unchanged.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: login-hammer
+  namespace: marketly
+  labels:
+    app: login-hammer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: login-hammer
+  template:
+    metadata:
+      labels:
+        app: login-hammer
+    spec:
+      containers:
+        - name: hammer
+          image: busybox:1.36
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              for i in $(seq 1 8); do
+                (
+                  while true; do
+                    wget -q -O /dev/null \
+                      --post-data='{"email":"loadtest'"$i"'@example.com","password":"test-password"}' \
+                      --header='Content-Type: application/json' \
+                      http://ingress-nginx-controller.marketly.svc.cluster.local/auth/login || true
+                    sleep 0.05
+                  done
+                ) &
+              done
+              wait
+          resources:
+            requests:
+              cpu: 50m
+              memory: 16Mi
+            limits:
+              cpu: 300m
+              memory: 64Mi

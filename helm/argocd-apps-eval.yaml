@@ -1,0 +1,197 @@
+# Argo CD Application definitions — EVAL VARIANT for the kind/GitHub Actions
+# environment.
+#
+# Identical to argocd-apps.yaml except selfHeal is disabled: the eval driver
+# scales services down to fit the kind node (2 replicas instead of 3-4), and
+# selfHeal would revert that. Automated sync stays on, so when Sentinel's
+# merged fix triggers a "deploy: sha-XXX" manifest commit, Argo CD still
+# rolls the fix out — that part of the loop is unchanged.
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: checkout-api
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/marketly-org/checkout-api
+    targetRevision: main
+    path: k8s
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: marketly
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: false
+    syncOptions:
+      - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: payments-api
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/marketly-org/payments-api
+    targetRevision: main
+    path: k8s
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: marketly
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: false
+    syncOptions:
+      - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: inventory-api
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/marketly-org/inventory-api
+    targetRevision: main
+    path: k8s
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: marketly
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: false
+    syncOptions:
+      - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: user-api
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/marketly-org/user-api
+    targetRevision: main
+    path: k8s
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: marketly
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: false
+    syncOptions:
+      - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: search-api
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/marketly-org/search-api
+    targetRevision: main
+    path: k8s
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: marketly
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: false
+    syncOptions:
+      - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: shipping-api
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/marketly-org/shipping-api
+    targetRevision: main
+    path: k8s
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: marketly
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: false
+    syncOptions:
+      - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: analytics-worker
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/marketly-org/analytics-worker
+    targetRevision: main
+    path: k8s
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: marketly
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: false
+    syncOptions:
+      - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: notification-worker
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/marketly-org/notification-worker
+    targetRevision: main
+    path: k8s
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: marketly
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: false
+    syncOptions:
+      - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: recommendation-engine
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/marketly-org/recommendation-engine
+    targetRevision: main
+    path: k8s
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: marketly
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: false
+    syncOptions:
+      - CreateNamespace=true

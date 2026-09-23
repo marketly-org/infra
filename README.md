@@ -2,9 +2,62 @@
 
 Terraform + Helm + scripts to deploy the full Marketly e-commerce platform on Azure AKS with Sentinel autonomous SRE.
 
+> **No Azure? Run the eval on GitHub Actions instead** — see
+> [Sentinel eval on GitHub Actions (kind)](#sentinel-eval-on-github-actions-kind)
+> below. Same bugs, same scoring, cluster lives and dies inside one workflow
+> job.
+
 ## Architecture
 
 9 microservices (8 languages) + Postgres + Redis + Argo CD + Sentinel. All bugs are real production failure modes for Sentinel to detect, diagnose, and fix autonomously.
+
+## Sentinel eval on GitHub Actions (kind)
+
+The full investigation-quality eval without Azure: a kind cluster is created
+inside a single workflow job, the 9 services sync via Argo CD, traffic
+triggers the planted bugs, Sentinel investigates with Groq and opens PRs,
+and `scripts/eval-score.py` scores them against `ground-truth.md`. The
+cluster is destroyed with the job — nothing to tear down, nothing to forget.
+
+### One-time setup
+
+1. Add repo secrets (Settings → Secrets and variables → Actions):
+   - `MARKETLY_GITHUB_TOKEN` — PAT with `repo` + `read:packages` on
+     marketly-org (investigation clones, PR open/merge, post-run reset)
+   - `GROQ_API_KEY` — Groq key
+2. That's it. The service images pull via node-level containerd auth, and
+   Argo CD gets per-repo git credentials created by the driver.
+
+### Run
+
+Actions → **Sentinel Eval (kind)** → Run workflow. Inputs: soak window
+(default 45 min), replicas (default 2), autoMerge sandbox gate, model names,
+and whether to reset the service repos afterwards (default on — auto-merged
+fixes and their `deploy:` commits are force-reverted so the next run finds
+the bugs again).
+
+Results land in the job summary (per-service table: incident / status /
+confidence / PR / fix-matches-ground-truth) and the `eval-results` artifact
+(incidents.json, Sentinel logs, pod snapshots over time).
+
+### Differences vs the AKS path
+
+| | AKS (00/01 scripts) | GHA eval (10 script) |
+|---|---|---|
+| Cluster | 3-node AKS, standing | 1-node kind, ~2h lifespan |
+| Postgres/Redis | Azure PG + Azure Cache | in-cluster (`k8s/eval/`) |
+| Runner | your machine + `az login` | ubuntu-latest |
+| State between runs | persists | fresh every run |
+| Cost | ~$1.10/hr while up | ~60-110 Actions min/run |
+
+Notes:
+- Run #1 is a shakeout run — expect to iterate on boot/trigger issues
+  before scores mean anything.
+- kind's default CNI accepts NetworkPolicy objects but doesn't enforce
+  them, so Sentinel's sandbox isolation is nominal in this environment.
+- The login-hammer deployment (`k8s/eval/login-hammer.yaml`) accelerates
+  /auth/login load so user-api's memory leak OOMs inside the soak window —
+  extra traffic, same bug.
 
 ## Prerequisites
 
