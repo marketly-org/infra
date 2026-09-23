@@ -1,0 +1,79 @@
+# nginx ingress controller + routes to all services.
+# Applied after Argo CD is installed.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-ingress-config
+  namespace: marketly
+data:
+  use-proxy-protocol: "false"
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: marketly-ingress
+  namespace: marketly
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          - path: /checkout(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: checkout-api
+                port:
+                  number: 8080
+          - path: /payments(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: payments-api
+                port:
+                  number: 8080
+          - path: /products(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: inventory-api
+                port:
+                  number: 8080
+          - path: /inventory(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: inventory-api
+                port:
+                  number: 8080
+          - path: /auth(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: user-api
+                port:
+                  number: 8080
+          - path: /users(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: user-api
+                port:
+                  number: 8080
+          - path: /search(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: search-api
+                port:
+                  number: 8080
+          - path: /shipping(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: shipping-api
+                port:
+                  number: 8080

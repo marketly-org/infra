@@ -1,0 +1,22 @@
+# Marketly Infrastructure — example variables
+# Copy to terraform.tfvars and fill in your values.
+
+name_prefix = "marketly"
+location    = "eastus"
+node_count  = 3
+node_vm_size = "Standard_D2s_v3"
+
+# LLM config (required)
+llm_provider      = "zai"
+llm_api_key       = "your-llm-api-key-here"
+llm_fast_model    = "glm-4-flash"
+llm_frontier_model = "glm-4.5"
+
+# GitHub PAT (required)
+github_token = "ghp_your_github_pat_here"
+
+# Stripe (optional — empty = simulated)
+stripe_api_key = ""
+
+# Sentinel admin token
+sentinel_api_token = "marketly-sentinel-token"

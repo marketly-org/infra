@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: marketly
+  labels:
+    app.kubernetes.io/part-of: marketly
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: argocd
+  labels:
+    app.kubernetes.io/part-of: marketly
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sentinel
+  labels:
+    app.kubernetes.io/part-of: marketly

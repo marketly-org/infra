@@ -1,0 +1,68 @@
+# Sentinel Helm values for the Marketly test cluster.
+#
+# Secrets (LLM key, GitHub token, Stripe key) are pulled from Key Vault
+# at deploy time by the deploy script and passed as --set overrides.
+
+image:
+  registry: "docker.io/karimzakzouk"
+  repository: "sentinel"
+  tag: "1.7.0"
+  pullPolicy: Always
+
+sentinel:
+  # GitHub token — REQUIRED (passed via --set)
+  githubToken: ""
+
+  # Admin API bearer token
+  apiToken: "marketly-sentinel-token"
+
+  # GitHub repo allowlist — only these repos can be cloned
+  allowedGithubRepos: "marketly-org/checkout-api,marketly-org/payments-api,marketly-org/inventory-api,marketly-org/user-api,marketly-org/search-api,marketly-org/shipping-api,marketly-org/analytics-worker,marketly-org/notification-worker,marketly-org/recommendation-engine"
+
+  # LLM settings (keys passed via --set)
+  llm:
+    provider: "zai"
+    apiKey: ""
+    fastModel: "glm-4-flash"
+    frontierModel: "glm-4.5"
+
+  # Auto-merge: Sentinel's PRs are auto-merged if CI passes + confidence ≥ 70%
+  # + sandbox verification depth ≥ L3 (v1.7.0 gate)
+  autoMerge:
+    enabled: true
+    namespaces: ["marketly"]
+    minConfidence: 0.70
+    requireCI: true
+    ciTimeoutSec: 300
+    maxPerHour: 5
+    cooldownMin: 10
+    minSandboxLevel: 3
+
+  # L2 safe-actions (immediate remediation)
+  safeActions:
+    enabled: false  # disabled for testing
+
+  # Fix verification — canary metrics after a fix deploys (v1.7.0+)
+  fixVerify:
+    enabled: true
+
+rbac:
+  writeNamespaces: ["marketly"]
+  readSecrets: true  # needed for GHCR pull secret + DB credentials
+
+ingress:
+  enabled: true
+  className: "nginx"
+  hosts:
+    - host: sentinel.marketly.local
+      paths:
+        - path: /
+          pathType: Prefix
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
