@@ -46,7 +46,10 @@ jobs:
   eval:
     name: Detect → Investigate → PR → Score
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ fromJSON(inputs.wait_minutes) + 75 }}
+    # GHA expressions have no arithmetic operators, so this is static:
+    # default run (45min soak) finishes in ~2h; this only guards runaways.
+    # If you raise wait_minutes past ~160, raise this too.
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
 
