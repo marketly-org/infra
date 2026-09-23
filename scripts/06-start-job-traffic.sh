@@ -248,7 +248,7 @@ spec:
                   # whether traffic is flowing (and at what error rate).
                   total=\$((ok + fail))
                   if [ \$((total % 100)) -eq 0 ]; then
-                    echo "grpc-injector: \$total calls (ok=\\$ok fail=\\$fail)"
+                    echo "grpc-injector: \$total calls (ok=\$ok fail=\$fail)"
                   fi
                 done
               }
