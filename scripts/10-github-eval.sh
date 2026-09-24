@@ -626,6 +626,47 @@ kubectl -n sentinel set env deploy/sentinel \
 kubectl -n sentinel rollout status deploy/sentinel --timeout=180s
 echo "  sentinel deadlines: fix-proposer 900s, investigation 1200s"
 
+# --- Post-install verification + self-heal (run #15 post-mortem) ------------
+# Run #15's pool was "configured" (harness echoed the setup line, helm
+# deployed without error) yet the pod booted in single-provider mode —
+# SENTINEL_LLM_PROVIDERS never made it into the live deployment. Every
+# component tested clean in isolation afterward (bash quoting on the real
+# runner, helm 3.13-3.22, chart tarball, values file, kubectl set env
+# round-trip, real secret contents — see debug-pool.yml run 36068580430),
+# so the mechanism is not reproducible. Instead of trusting it, VERIFY the
+# live deployment and repair directly if the env is missing. A direct
+# kubectl set env bypasses helm values entirely.
+if [ -n "$PROVIDERS_SET_JSON" ]; then
+  if kubectl -n sentinel get deploy sentinel -o jsonpath='{.spec.template.spec.containers[0].env[*].name}' 2>/dev/null \
+      | tr ' ' '\n' | grep -qx SENTINEL_LLM_PROVIDERS; then
+    echo "  llm pool: env present in live deployment"
+  else
+    echo "  llm pool: env MISSING after install — patching directly"
+    kubectl -n sentinel set env deploy/sentinel \
+      "SENTINEL_LLM_PROVIDERS=$PROVIDERS_SET_JSON"
+    kubectl -n sentinel rollout status deploy/sentinel --timeout=180s
+  fi
+  # Ground truth: the pod's own startup log. If this line is absent the
+  # pool is NOT active and the run is a guaranteed waste of 50 minutes —
+  # fail now instead. Retry briefly: the repaired pod's container may take
+  # a few seconds to reach its startup logging.
+  POOL_OK=""
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 2
+    if kubectl -n sentinel logs deploy/sentinel 2>/dev/null | grep -q "failover pool enabled"; then
+      POOL_OK="yes"; break
+    fi
+  done
+  if [ -n "$POOL_OK" ]; then
+    echo "  llm pool: ACTIVE (verified in sentinel startup log)"
+  else
+    echo "  FATAL: llm pool not active after install + repair attempt."
+    echo "  sentinel startup env lines:"
+    kubectl -n sentinel logs deploy/sentinel 2>/dev/null | grep -iE 'failover pool|llm' | head -5
+    exit 1
+  fi
+fi
+
 # ---------------------------------------------------------------- phase 8
 log "Phase 8/10: traffic + ${WAIT_MINUTES}m soak"
 bash scripts/02-start-traffic.sh
