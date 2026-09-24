@@ -1,0 +1,49 @@
+name: Debug pool rendering
+on:
+  workflow_dispatch:
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reproduce the run-#15 --set-json form with real secrets
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          set -x
+          bash --version | head -1
+          helm version
+
+          LLM_PROVIDER=groq
+          FAST_MODEL=openai/gpt-oss-20b
+          FRONTIER_MODEL=openai/gpt-oss-120b
+          LLM_API_KEY="$GROQ_API_KEY"
+          OVERFLOW_KEY="$GEMINI_API_KEY"
+          OVERFLOW_MODELS='"fastModel":"gemini-2.5-flash","frontierModel":"gemini-2.5-flash"'
+
+          PROVIDERS_SET_JSON="[{\"id\":\"primary\",\"provider\":\"$LLM_PROVIDER\",\"apiKey\":\"$LLM_API_KEY\",\"fastModel\":\"$FAST_MODEL\",\"frontierModel\":\"$FRONTIER_MODEL\",\"priority\":1},{\"id\":\"overflow\",\"provider\":\"gemini\",\"apiKey\":\"$OVERFLOW_KEY\",$OVERFLOW_MODELS,\"priority\":2}]"
+
+          # argv exactly as run #15 built it
+          set -- ${PROVIDERS_SET_JSON:+--set-json sentinel.llm.providers="$PROVIDERS_SET_JSON"}
+          echo "argv count: $#"
+          i=0; for a in "$@"; do i=$((i+1)); echo "ARG$i length: ${#a}"; echo "ARG$i prefix: ${a:0:40}"; done
+
+          helm repo add sentinel https://karimzakzouk.github.io/sentinel/ 2>/dev/null || true
+          helm repo update >/dev/null
+          helm template dbg sentinel/sentinel --version 1.7.4 \
+            --values helm/sentinel-values.yaml \
+            --set sentinel.githubToken=tok \
+            --set sentinel.llm.apiKey=k \
+            --set sentinel.llm.provider=groq \
+            --set sentinel.llm.fastModel=m1 \
+            --set sentinel.llm.frontierModel=m2 \
+            --set sentinel.autoMerge.minSandboxLevel=3 \
+            ${PROVIDERS_SET_JSON:+--set-json sentinel.llm.providers="$PROVIDERS_SET_JSON"} \
+            > /tmp/rendered.yaml
+          echo "=== providers env in rendered manifest:"
+          grep -c SENTINEL_LLM_PROVIDERS /tmp/rendered.yaml || echo "ZERO — reproduced the bug!"
+          grep -A1 SENTINEL_LLM_PROVIDERS /tmp/rendered.yaml | head -3

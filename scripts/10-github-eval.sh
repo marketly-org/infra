@@ -552,6 +552,7 @@ helm repo update >/dev/null
 # The primary is whoever LLM_PROVIDER names; the overflow is the other free
 # key when we hold one. Provider entries carry their own models.
 PROVIDERS_SET_JSON=""
+PROVIDERS_SETS=()
 OVERFLOW_KEY=""
 OVERFLOW_MODELS=""
 case "$LLM_PROVIDER" in
@@ -567,21 +568,35 @@ esac
 if [ -n "$OVERFLOW_KEY" ]; then
   OVERFLOW_PROVIDER="$([ "$LLM_PROVIDER" = groq ] && echo gemini || echo groq)"
   PROVIDERS_SET_JSON="[{\"id\":\"primary\",\"provider\":\"$LLM_PROVIDER\",\"apiKey\":\"$LLM_API_KEY\",\"fastModel\":\"$FAST_MODEL\",\"frontierModel\":\"$FRONTIER_MODEL\",\"priority\":1},{\"id\":\"overflow\",\"provider\":\"$OVERFLOW_PROVIDER\",\"apiKey\":\"$OVERFLOW_KEY\",$OVERFLOW_MODELS,\"priority\":2}]"
+  # MUST go through an array: in an unquoted ${var:+word} the double quotes
+  # around the value are parsed as shell quote OPERATORS, splitting the
+  # flag into three argv pieces — helm then receives
+  # `sentinel.llm.providers=` with an EMPTY value, silently sets it to nil,
+  # and the pod boots in single-provider mode (run #15: pool "configured",
+  # log said disabled, checkout-api died on TPM for the third time).
+  PROVIDERS_SETS+=(--set-json "sentinel.llm.providers=$PROVIDERS_SET_JSON")
   echo "  llm pool: $LLM_PROVIDER (primary) + $OVERFLOW_PROVIDER (overflow)"
 fi
 
-# --- Docker Hub creds for the Kaniko sandbox builder ------------------------
-# Without these, sandbox verification skips ("no Docker Hub credentials
-# configured") and auto-merge can never fire (gate 3). Optional: the eval
-# still scores PRs without them, just without the merge->redeploy->recovery
-# leg.
+# --- Sandbox (Kaniko) registry auth -----------------------------------------
+# Canary images go to the PROD registry by design (kaniko.go: any image
+# name containing "/" is used as-is, so the prod namespace's pull secrets
+# cover the canary too). Our services live on ghcr.io/marketly-org/*, so
+# the registry auth must be for GHCR — a GitHub PAT with write:packages,
+# not Docker Hub creds (run #15 failed here: Kaniko pushed canaries to
+# ghcr.io with docker.io creds -> UNAUTHORIZED on every build).
+# The chart's single auth slot (dockerHubUsername/dockerHubToken +
+# kanikoRegistry) is overloaded: registry=ghcr.io + PAT password.
 SANDBOX_SETS=()
-if [ -n "${DOCKERHUB_USERNAME:-}" ] && [ -n "${DOCKERHUB_TOKEN:-}" ]; then
-  SANDBOX_SETS+=(--set-string "sentinel.dockerHubUsername=$DOCKERHUB_USERNAME"
-                 --set-string "sentinel.dockerHubToken=$DOCKERHUB_TOKEN")
-  echo "  sandbox: Docker Hub creds present — Kaniko pushes enabled"
+GH_USER=$(curl -s -m 15 -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/user \
+  | jq -r '.login // empty' 2>/dev/null || true)
+if [ -n "$GH_USER" ]; then
+  SANDBOX_SETS+=(--set-string "sentinel.kanikoRegistry=ghcr.io"
+                 --set-string "sentinel.dockerHubUsername=$GH_USER"
+                 --set-string "sentinel.dockerHubToken=$GITHUB_TOKEN")
+  echo "  sandbox: Kaniko pushes -> ghcr.io as $GH_USER"
 else
-  echo "  sandbox: no Docker Hub creds — verification will skip (auto-merge gate 3 closed)"
+  echo "  sandbox: could not resolve GH user — Kaniko pushes will fail (auto-merge gate 3 closed)"
 fi
 
 helm upgrade --install sentinel sentinel/sentinel \
@@ -594,7 +609,7 @@ helm upgrade --install sentinel sentinel/sentinel \
   --set sentinel.llm.fastModel="$FAST_MODEL" \
   --set sentinel.llm.frontierModel="$FRONTIER_MODEL" \
   --set sentinel.autoMerge.minSandboxLevel="$MIN_SANDBOX_LEVEL" \
-  ${PROVIDERS_SET_JSON:+--set-json sentinel.llm.providers="$PROVIDERS_SET_JSON"} \
+  "${PROVIDERS_SETS[@]}" \
   "${SANDBOX_SETS[@]}" \
   --wait --timeout 300s
 echo "  sentinel installed"

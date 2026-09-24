@@ -36,7 +36,11 @@ EXPECTED = {
     "inventory-api": "UPDATE.*reserved",
     "user-api": "LRU|TTL|setTimeout|eviction",
     "search-api": "ok_or|is_none|return Err",
-    "shipping-api": "isPresent|orElseThrow|if.*isPresent",
+    # `orElse` subsumes orElseThrow/orElseGet — run #15's PR #6 used
+    # orElseGet(() -> fallback) (a valid graceful-handling fix) and was
+    # missed by the stricter orElseThrow-only pattern, desyncing score.md
+    # from pr-verification.txt (04-verify-prs.sh already had `orElse`).
+    "shipping-api": "isPresent|orElse",
     # analytics-worker: two acceptable fixes (decision 2026-09-24). The
     # planted deadlock (lock-order fix) is UNREACHABLE behind the repo's
     # genuine NoMethodError — distributed_lock.rb calls the old redis-gem
