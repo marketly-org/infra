@@ -544,6 +544,46 @@ esac
 
 helm repo add sentinel https://karimzakzouk.github.io/sentinel/ 2>/dev/null || true
 helm repo update >/dev/null
+# --- LLM failover pool (chart 1.7.4: SENTINEL_LLM_PROVIDERS) ---------------
+# Stacks a second provider as overflow for the primary. When the primary
+# hard-fails a call (retries exhausted — e.g. Groq TPM starvation under 5+
+# concurrent fix proposals, which killed checkout-api in runs #12 and #14),
+# the pool's circuit breaker fails over instead of sleeping out the window.
+# The primary is whoever LLM_PROVIDER names; the overflow is the other free
+# key when we hold one. Provider entries carry their own models.
+PROVIDERS_SET_JSON=""
+OVERFLOW_KEY=""
+OVERFLOW_MODELS=""
+case "$LLM_PROVIDER" in
+  groq)
+    if [ -n "${GEMINI_API_KEY:-}" ]; then
+      OVERFLOW_KEY="$GEMINI_API_KEY"; OVERFLOW_MODELS='"fastModel":"gemini-2.5-flash","frontierModel":"gemini-2.5-flash"'
+    fi ;;
+  gemini)
+    if [ -n "${GROQ_API_KEY:-}" ]; then
+      OVERFLOW_KEY="$GROQ_API_KEY"; OVERFLOW_MODELS='"fastModel":"openai/gpt-oss-20b","frontierModel":"openai/gpt-oss-120b"'
+    fi ;;
+esac
+if [ -n "$OVERFLOW_KEY" ]; then
+  OVERFLOW_PROVIDER="$([ "$LLM_PROVIDER" = groq ] && echo gemini || echo groq)"
+  PROVIDERS_SET_JSON="[{\"id\":\"primary\",\"provider\":\"$LLM_PROVIDER\",\"apiKey\":\"$LLM_API_KEY\",\"fastModel\":\"$FAST_MODEL\",\"frontierModel\":\"$FRONTIER_MODEL\",\"priority\":1},{\"id\":\"overflow\",\"provider\":\"$OVERFLOW_PROVIDER\",\"apiKey\":\"$OVERFLOW_KEY\",$OVERFLOW_MODELS,\"priority\":2}]"
+  echo "  llm pool: $LLM_PROVIDER (primary) + $OVERFLOW_PROVIDER (overflow)"
+fi
+
+# --- Docker Hub creds for the Kaniko sandbox builder ------------------------
+# Without these, sandbox verification skips ("no Docker Hub credentials
+# configured") and auto-merge can never fire (gate 3). Optional: the eval
+# still scores PRs without them, just without the merge->redeploy->recovery
+# leg.
+SANDBOX_SETS=()
+if [ -n "${DOCKERHUB_USERNAME:-}" ] && [ -n "${DOCKERHUB_TOKEN:-}" ]; then
+  SANDBOX_SETS+=(--set-string "sentinel.dockerHubUsername=$DOCKERHUB_USERNAME"
+                 --set-string "sentinel.dockerHubToken=$DOCKERHUB_TOKEN")
+  echo "  sandbox: Docker Hub creds present — Kaniko pushes enabled"
+else
+  echo "  sandbox: no Docker Hub creds — verification will skip (auto-merge gate 3 closed)"
+fi
+
 helm upgrade --install sentinel sentinel/sentinel \
   --namespace sentinel --create-namespace \
   --version "$SENTINEL_CHART_VERSION" \
@@ -554,8 +594,22 @@ helm upgrade --install sentinel sentinel/sentinel \
   --set sentinel.llm.fastModel="$FAST_MODEL" \
   --set sentinel.llm.frontierModel="$FRONTIER_MODEL" \
   --set sentinel.autoMerge.minSandboxLevel="$MIN_SANDBOX_LEVEL" \
+  ${PROVIDERS_SET_JSON:+--set-json sentinel.llm.providers="$PROVIDERS_SET_JSON"} \
+  "${SANDBOX_SETS[@]}" \
   --wait --timeout 300s
 echo "  sentinel installed"
+
+# The chart has no knobs for the pipeline deadlines (as of 1.7.4), so they
+# are patched in post-install. Run #14 post-mortem: 5 concurrent gpt-oss-120b
+# fix proposals drained Groq's TPM; the LAST proposer in line (checkout-api,
+# 2/2 runs) exhausted its 5-min context budget while waiting on rate-limit
+# windows — attempts 4/5/6 failed in ~2ms each. The investigation timeout is
+# the parent budget, so it must rise too (fix-proposer ctx derives from it).
+kubectl -n sentinel set env deploy/sentinel \
+  SENTINEL_FIX_PROPOSER_TIMEOUT="${SENTINEL_FIX_PROPOSER_TIMEOUT:-900}" \
+  SENTINEL_INVESTIGATION_TIMEOUT="${SENTINEL_INVESTIGATION_TIMEOUT:-1200}"
+kubectl -n sentinel rollout status deploy/sentinel --timeout=180s
+echo "  sentinel deadlines: fix-proposer 900s, investigation 1200s"
 
 # ---------------------------------------------------------------- phase 8
 log "Phase 8/10: traffic + ${WAIT_MINUTES}m soak"

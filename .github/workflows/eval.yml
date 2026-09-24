@@ -113,6 +113,8 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
           WAIT_MINUTES: ${{ inputs.wait_minutes }}
           REPLICAS: ${{ inputs.replicas }}
           MIN_SANDBOX_LEVEL: ${{ inputs.min_sandbox_level }}
