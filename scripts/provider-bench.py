@@ -29,12 +29,12 @@ if os.environ.get("GEMINI_API_KEY"):
         "base": "https://generativelanguage.googleapis.com/v1beta/openai",
         "key": os.environ["GEMINI_API_KEY"],
         # compat endpoint: same models, same quotas as the native API goai uses.
-        # round 2: 3.5 series (2.5-flash-lite is deprecated for new keys;
-        # 2.5-flash already scored 5/5 + 5/5 in round 1).
+        # round 3: fast-tier candidates (3.5/3.8-flash are 503 "high
+        # demand" as of today; 2.5-flash already 5/5+5/5 in round 1).
         "models": [m for m in os.environ.get(
-            "GEMINI_MODELS", "gemini-3.5-flash,gemini-3.5-flash-lite"
-            ",gemini-3.8-flash").split(",") if m],
-        "burst_model": "gemini-3.5-flash-lite",
+            "GEMINI_MODELS", "gemini-3.1-flash-lite,gemma-4-31b-it"
+            ",gemini-3.5-flash-lite").split(",") if m],
+        "burst_model": os.environ.get("GEMINI_BURST_MODEL", "gemini-3.1-flash-lite"),
     }
 if os.environ.get("CEREBRAS_API_KEY"):
     PROVIDERS["cerebras"] = {
@@ -218,7 +218,9 @@ def bench_quality(prov, base, key, model):
                 "secs": round(secs, 1), "score": pts, "notes": notes,
                 "finish": finish, "usage": usage, "content": content})
 
-def bench_burst(prov, base, key, model, n=12):
+def bench_burst(prov, base, key, model, n=None):
+    if n is None:
+        n = int(os.environ.get("BURST_N", "12"))
     ok_n, err_429, other = 0, 0, 0
     raw_429 = None
     t0 = time.time()
@@ -269,7 +271,7 @@ def main():
 
         burst_m = p.get("burst_model") or (todo[-1] if todo else None)
         if burst_m:
-            print(f" -- burst: {burst_m}")
+            print(f" -- burst: {burst_m} (n={os.environ.get('BURST_N', '12')})")
             bench_burst(prov, p["base"], p["key"], burst_m)
 
     print(f"\nresults -> {OUT}")

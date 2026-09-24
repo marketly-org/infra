@@ -15,7 +15,16 @@ on:
     inputs:
       providers:
         description: "Comma list: gemini,cerebras"
-        default: "gemini,cerebras"
+        default: "gemini"
+      gemini_models:
+        description: "Comma list of gemini models to quality-test"
+        default: "gemini-3.1-flash-lite,gemma-4-31b-it,gemini-3.5-flash-lite"
+      burst_model:
+        description: "Model for the rate-limit burst test"
+        default: "gemini-2.5-flash"
+      burst_n:
+        description: "Number of burst calls"
+        default: "30"
 
 permissions:
   contents: read
@@ -33,6 +42,9 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           PROVIDERS: ${{ inputs.providers }}
+          GEMINI_MODELS: ${{ inputs.gemini_models }}
+          GEMINI_BURST_MODEL: ${{ inputs.burst_model }}
+          BURST_N: ${{ inputs.burst_n }}
         run: python3 scripts/provider-bench.py
 
       - name: Upload bench results
