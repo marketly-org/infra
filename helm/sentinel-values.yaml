@@ -6,7 +6,7 @@
 image:
   registry: "docker.io/karimzakzouk"
   repository: "sentinel"
-  tag: "1.7.4"
+  tag: "1.7.5"
   pullPolicy: Always
 
 sentinel:

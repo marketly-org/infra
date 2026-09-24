@@ -603,10 +603,15 @@ else
   echo "  sandbox: could not resolve GH user — Kaniko pushes will fail (auto-merge gate 3 closed)"
 fi
 
+# Image tag MUST track the chart version: helm/sentinel-values.yaml pins
+# image.tag for local deploys, and a values override beats the chart default
+# (run #17: chart 1.7.5 + values tag 1.7.4 -> old binary ran, pool wiring
+# fix absent, run died at the verify gate with nothing wrong in any render).
 helm upgrade --install sentinel sentinel/sentinel \
   --namespace sentinel --create-namespace \
   --version "$SENTINEL_CHART_VERSION" \
   --values helm/sentinel-values.yaml \
+  --set image.tag="$SENTINEL_CHART_VERSION" \
   --set sentinel.githubToken="$GITHUB_TOKEN" \
   --set sentinel.llm.apiKey="$LLM_API_KEY" \
   --set sentinel.llm.provider="$LLM_PROVIDER" \
@@ -629,6 +634,25 @@ kubectl -n sentinel set env deploy/sentinel \
   SENTINEL_INVESTIGATION_TIMEOUT="${SENTINEL_INVESTIGATION_TIMEOUT:-1200}"
 kubectl -n sentinel rollout status deploy/sentinel --timeout=180s
 echo "  sentinel deadlines: fix-proposer 900s, investigation 1200s"
+
+  # Image/chart drift guard: the pod's self-reported version must equal the
+  # chart version (values-file tag drift once silently ran an old binary).
+  VER_OK=""
+  for _ in 1 2 3 4 5; do
+    sleep 2
+    if kubectl -n sentinel logs deploy/sentinel 2>/dev/null \
+        | grep -q "\"version\":\"$SENTINEL_CHART_VERSION\""; then
+      VER_OK="yes"; break
+    fi
+  done
+  if [ -z "$VER_OK" ]; then
+    echo "  FATAL: sentinel pod is not running binary $SENTINEL_CHART_VERSION:"
+    kubectl -n sentinel logs deploy/sentinel 2>/dev/null | grep -o 'version":"[^"]*' | head -1
+    echo "  (image tag drift — check --set image.tag and the values file)"
+    exit 1
+  fi
+  echo "  sentinel binary: $SENTINEL_CHART_VERSION (verified in startup log)"
+
 
 # --- Post-install verification + self-heal (run #15 post-mortem) ------------
 # Run #15's pool was "configured" (harness echoed the setup line, helm
