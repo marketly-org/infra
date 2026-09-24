@@ -2,13 +2,16 @@ name: Sentinel Eval (kind)
 
 # Investigation-quality eval, no Azure required: a kind cluster is born and
 # dies inside this job. Sentinel (released helm chart + image) watches
-# the 9 marketly services, investigates real incidents with Groq, opens PRs;
+# the 9 marketly services, investigates real incidents with the configured
+# LLM provider (gemini by default), opens PRs;
 # scripts/eval-score.py scores them against ground truth.
 #
 # Secrets required (repo Settings → Secrets → Actions):
 #   MARKETLY_GITHUB_TOKEN  PAT with repo + read:packages on marketly-org
 #                          (clone for investigation, open/merge PRs, reset)
-#   GROQ_API_KEY           Groq API key
+#   GROQ_API_KEY           Groq API key (provider=groq)
+#   GEMINI_API_KEY         Google AI Studio key (provider=gemini, default)
+#   CEREBRAS_API_KEY       Cerebras key (provider=cerebras, needs billing)
 #
 # Run #1 is a shakeout run: expect to iterate on boot/trigger issues before
 # scores become meaningful. Costs ~60-110 runner-minutes per run.
@@ -28,12 +31,15 @@ on:
       reset_repos:
         description: "Reset service repos to pre-eval SHAs afterwards (true/false)"
         default: "true"
+      llm_provider:
+        description: "LLM provider: gemini | groq | cerebras"
+        default: "gemini"
       fast_model:
-        description: "Groq model for fast/aux LLM calls"
-        default: "openai/gpt-oss-20b"
+        description: "Fast-tier model (empty = provider default)"
+        default: ""
       frontier_model:
-        description: "Groq model for investigation reasoning (70B-class)"
-        default: "openai/gpt-oss-120b"
+        description: "Frontier-tier model (empty = provider default)"
+        default: ""
       sentinel_chart_version:
         description: "Sentinel helm chart version to install"
         default: "1.7.4"
@@ -103,7 +109,10 @@ jobs:
       - name: Run eval
         env:
           GITHUB_TOKEN: ${{ secrets.MARKETLY_GITHUB_TOKEN }}
+          LLM_PROVIDER: ${{ inputs.llm_provider }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           WAIT_MINUTES: ${{ inputs.wait_minutes }}
           REPLICAS: ${{ inputs.replicas }}
           MIN_SANDBOX_LEVEL: ${{ inputs.min_sandbox_level }}

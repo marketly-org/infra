@@ -21,10 +21,12 @@
 #
 # Required env:
 #   GITHUB_TOKEN  PAT with repo + read:packages on marketly-org
-#   GROQ_API_KEY  Groq API key
+#   LLM_PROVIDER  groq | gemini | cerebras
+#   <PROVIDER>_API_KEY  the matching key (GROQ_API_KEY / GEMINI_API_KEY /
+#                       CEREBRAS_API_KEY)
 # Optional env (defaults):
 #   WAIT_MINUTES=45  REPLICAS=2  MIN_SANDBOX_LEVEL=3  RESET_REPOS=true
-#   FAST_MODEL=llama-3.1-8b-instant  FRONTIER_MODEL=llama-3.3-70b-versatile
+#   FAST_MODEL / FRONTIER_MODEL  per-provider defaults below
 #
 # Exit code: 0 = eval ran (score is in the summary, whatever it is);
 # 1 = harness broke (nothing deployed, or zero incidents detected).
@@ -44,8 +46,23 @@ WAIT_MINUTES="${WAIT_MINUTES:-45}"
 REPLICAS="${REPLICAS:-2}"
 MIN_SANDBOX_LEVEL="${MIN_SANDBOX_LEVEL:-3}"
 RESET_REPOS="${RESET_REPOS:-true}"
-FAST_MODEL="${FAST_MODEL:-openai/gpt-oss-20b}"
-FRONTIER_MODEL="${FRONTIER_MODEL:-openai/gpt-oss-120b}"
+LLM_PROVIDER="${LLM_PROVIDER:-gemini}"
+case "$LLM_PROVIDER" in
+  gemini)
+    # Round-3 bench (2026-09-24): 3.1/3.5/3.8-flash + gemma-4 all 503/500
+    # "high demand" on the free tier; 2.5-flash is 5/5+5/5 on the run-#12
+    # incident prompts and reliable. Free-tier RPM is ~5 (token bucket) —
+    # v1.7.4's waited-retry absorbs it at eval pacing.
+    FAST_MODEL="${FAST_MODEL:-gemini-2.5-flash}"
+    FRONTIER_MODEL="${FRONTIER_MODEL:-gemini-2.5-flash}" ;;
+  groq)
+    FAST_MODEL="${FAST_MODEL:-openai/gpt-oss-20b}"
+    FRONTIER_MODEL="${FRONTIER_MODEL:-openai/gpt-oss-120b}" ;;
+  cerebras)
+    FAST_MODEL="${FAST_MODEL:-qwen-3.8-27b}"
+    FRONTIER_MODEL="${FRONTIER_MODEL:-gpt-oss-120b}" ;;
+  *) echo "ERROR: unknown LLM_PROVIDER '$LLM_PROVIDER'"; exit 1 ;;
+esac
 SENTINEL_CHART_VERSION="${SENTINEL_CHART_VERSION:-1.7.4}"
 SENTINEL_API_TOKEN="marketly-sentinel-token"
 
@@ -53,7 +70,11 @@ SENTINEL_API_TOKEN="marketly-sentinel-token"
 WAIT_MINUTES=$(( WAIT_MINUTES > 240 ? 240 : WAIT_MINUTES ))
 
 : "${GITHUB_TOKEN:?Set GITHUB_TOKEN to a PAT with repo + read:packages on marketly-org}"
-: "${GROQ_API_KEY:?Set GROQ_API_KEY}"
+case "$LLM_PROVIDER" in
+  gemini)   : "${GEMINI_API_KEY:?Set GEMINI_API_KEY (LLM_PROVIDER=gemini)}" ;;
+  groq)     : "${GROQ_API_KEY:?Set GROQ_API_KEY (LLM_PROVIDER=groq)}" ;;
+  cerebras) : "${CEREBRAS_API_KEY:?Set CEREBRAS_API_KEY (LLM_PROVIDER=cerebras)}" ;;
+esac
 
 mkdir -p "$ART"
 
@@ -406,34 +427,108 @@ echo "  checkout-api now routed through the 8s slow sink (bug will fire:"
 echo "  event-loop freeze -> liveness failures -> restarts)"
 
 # ---------------------------------------------------------------- phase 7
-log "Phase 7/10: Sentinel (chart $SENTINEL_CHART_VERSION, provider=groq)"
+log "Phase 7/10: Sentinel (chart $SENTINEL_CHART_VERSION, provider=$LLM_PROVIDER)"
 
-# Fail fast if the configured Groq models no longer exist (run 35890547218
-# lost a full 40-min eval to a deprecated model name: every investigation
-# died at round 1 with "model does not exist").
-echo "  validating Groq models (frontier=$FRONTIER_MODEL fast=$FAST_MODEL)..."
-MODELS_JSON=$(curl -s -H "Authorization: Bearer $GROQ_API_KEY" \
-  https://api.groq.com/openai/v1/models)
-MODELS_LIST=$(printf '%s' "$MODELS_JSON" | python3 -c '
+case "$LLM_PROVIDER" in
+  gemini)   LLM_API_KEY="$GEMINI_API_KEY" ;;
+  groq)     LLM_API_KEY="$GROQ_API_KEY" ;;
+  cerebras) LLM_API_KEY="$CEREBRAS_API_KEY" ;;
+esac
+
+# Fail fast if the configured models no longer exist or do not respond (run
+# 35890547218 lost a full 40-min eval to a deprecated model name: every
+# investigation died at round 1 with "model does not exist").
+echo "  validating $LLM_PROVIDER models (frontier=$FRONTIER_MODEL fast=$FAST_MODEL)..."
+case "$LLM_PROVIDER" in
+  gemini)
+    # Native v1beta endpoint — the exact URL + auth goai's google provider
+    # uses in production (the OpenAI-compat path is NOT used for gemini).
+    # Lists models, then smoke-tests each configured model with a tiny
+    # generateContent call (catches 503 "high demand" and 404 deprecations
+    # that listing alone misses).
+    MODELS_JSON=$(curl -s -m 30 \
+      "https://generativelanguage.googleapis.com/v1beta/models?pageSize=100&key=$LLM_API_KEY")
+    MODELS_LIST=$(printf '%s' "$MODELS_JSON" | python3 -c '
+import json, sys
+try:
+    print("\n".join(m["name"].removeprefix("models/") for m in json.load(sys.stdin).get("models", [])))
+except Exception:
+    print("")')
+    if [ -z "$MODELS_LIST" ]; then
+      echo "  ERROR: could not list Gemini models. Raw response:"
+      printf '%s\n' "$MODELS_JSON" | head -c 500; echo
+      exit 1
+    fi
+    for M in "$FRONTIER_MODEL" "$FAST_MODEL"; do
+      if ! echo "$MODELS_LIST" | grep -qx "$M"; then
+        echo "  FAIL: model '$M' is not available to this key (deprecated? renamed?)"
+        echo "  Available: $(echo "$MODELS_LIST" | tr '\n' ' ')"
+        exit 1
+      fi
+    done
+    echo "  both models listed; smoke-testing generateContent..."
+    for M in "$FRONTIER_MODEL" "$FAST_MODEL"; do
+      SMOKE_CODE=$(curl -s -o /tmp/gemini-smoke.json -w '%{http_code}' -m 60 \
+        "https://generativelanguage.googleapis.com/v1beta/models/$M:generateContent?key=$LLM_API_KEY" \
+        -H 'Content-Type: application/json' \
+        -d '{"contents":[{"parts":[{"text":"Reply with the single word OK"}]}],"generationConfig":{"maxOutputTokens":512}}')
+      if [ "$SMOKE_CODE" != "200" ]; then
+        echo "  FAIL: $M smoke test HTTP $SMOKE_CODE:"
+        head -c 400 /tmp/gemini-smoke.json; echo
+        exit 1
+      fi
+    done
+    echo "  both models respond"
+    ;;
+  groq)
+    MODELS_JSON=$(curl -s -H "Authorization: Bearer $LLM_API_KEY" \
+      https://api.groq.com/openai/v1/models)
+    MODELS_LIST=$(printf '%s' "$MODELS_JSON" | python3 -c '
 import json, sys
 try:
     print("\n".join(m["id"] for m in json.load(sys.stdin).get("data", [])))
 except Exception:
     print("")')
-if [ -z "$MODELS_LIST" ]; then
-  echo "  ERROR: could not list Groq models. Raw response:"
-  printf '%s\n' "$MODELS_JSON" | head -c 500; echo
-  exit 1
-fi
-echo "  available: $(echo "$MODELS_LIST" | tr '\n' ' ')"
-for M in "$FRONTIER_MODEL" "$FAST_MODEL"; do
-  if ! echo "$MODELS_LIST" | grep -qx "$M"; then
-    echo "  FAIL: model '$M' is not available to this key (deprecated? renamed?)"
-    echo "  Pick from the list above and re-dispatch with fast_model/frontier_model inputs."
-    exit 1
-  fi
-done
-echo "  both models available"
+    if [ -z "$MODELS_LIST" ]; then
+      echo "  ERROR: could not list Groq models. Raw response:"
+      printf '%s\n' "$MODELS_JSON" | head -c 500; echo
+      exit 1
+    fi
+    echo "  available: $(echo "$MODELS_LIST" | tr '\n' ' ')"
+    for M in "$FRONTIER_MODEL" "$FAST_MODEL"; do
+      if ! echo "$MODELS_LIST" | grep -qx "$M"; then
+        echo "  FAIL: model '$M' is not available to this key (deprecated? renamed?)"
+        echo "  Pick from the list above and re-dispatch with fast_model/frontier_model inputs."
+        exit 1
+      fi
+    done
+    echo "  both models available"
+    ;;
+  cerebras)
+    # Cloudflare error-1010s non-browser user agents, so identify as one.
+    MODELS_JSON=$(curl -s -m 30 -A 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36' \
+      -H "Authorization: Bearer $LLM_API_KEY" https://api.cerebras.ai/v1/models)
+    MODELS_LIST=$(printf '%s' "$MODELS_JSON" | python3 -c '
+import json, sys
+try:
+    print("\n".join(m["id"] for m in json.load(sys.stdin).get("data", [])))
+except Exception:
+    print("")')
+    if [ -z "$MODELS_LIST" ]; then
+      echo "  ERROR: could not list Cerebras models. Raw response:"
+      printf '%s\n' "$MODELS_JSON" | head -c 500; echo
+      exit 1
+    fi
+    echo "  available: $(echo "$MODELS_LIST" | tr '\n' ' ')"
+    for M in "$FRONTIER_MODEL" "$FAST_MODEL"; do
+      if ! echo "$MODELS_LIST" | grep -qx "$M"; then
+        echo "  FAIL: model '$M' is not available to this key"
+        exit 1
+      fi
+    done
+    echo "  both models available"
+    ;;
+esac
 
 helm repo add sentinel https://karimzakzouk.github.io/sentinel/ 2>/dev/null || true
 helm repo update >/dev/null
@@ -442,8 +537,8 @@ helm upgrade --install sentinel sentinel/sentinel \
   --version "$SENTINEL_CHART_VERSION" \
   --values helm/sentinel-values.yaml \
   --set sentinel.githubToken="$GITHUB_TOKEN" \
-  --set sentinel.llm.apiKey="$GROQ_API_KEY" \
-  --set sentinel.llm.provider=groq \
+  --set sentinel.llm.apiKey="$LLM_API_KEY" \
+  --set sentinel.llm.provider="$LLM_PROVIDER" \
   --set sentinel.llm.fastModel="$FAST_MODEL" \
   --set sentinel.llm.frontierModel="$FRONTIER_MODEL" \
   --set sentinel.autoMerge.minSandboxLevel="$MIN_SANDBOX_LEVEL" \
