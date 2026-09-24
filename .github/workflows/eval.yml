@@ -32,8 +32,8 @@ on:
         description: "Reset service repos to pre-eval SHAs afterwards (true/false)"
         default: "true"
       llm_provider:
-        description: "LLM provider: gemini | groq | cerebras"
-        default: "gemini"
+        description: "LLM provider: groq | gemini | cerebras (groq leads — run #13: gemini 20-RPM starved 6/7 fix proposals)"
+        default: "groq"
       fast_model:
         description: "Fast-tier model (empty = provider default)"
         default: ""

@@ -46,16 +46,28 @@ WAIT_MINUTES="${WAIT_MINUTES:-45}"
 REPLICAS="${REPLICAS:-2}"
 MIN_SANDBOX_LEVEL="${MIN_SANDBOX_LEVEL:-3}"
 RESET_REPOS="${RESET_REPOS:-true}"
-LLM_PROVIDER="${LLM_PROVIDER:-gemini}"
+# Default provider: GROQ (reverted 2026-09-24 after run #13). Head-to-head
+# on the same incident set: Groq (run #12) shipped 4/9 PRs; Gemini free tier
+# (run #13) shipped 1/9 — its 20-RPM bucket starved 6/7 concurrent fix
+# proposers until their 5-min context deadlines blew (attempts 4/5/6 failed
+# in 2ms each). Groq's TPM waits are slower per-call but its aggregate
+# throughput under 7 parallel investigations wins. Gemini stays available
+# via LLM_PROVIDER=gemini.
+LLM_PROVIDER="${LLM_PROVIDER:-groq}"
 case "$LLM_PROVIDER" in
   gemini)
     # Round-3 bench (2026-09-24): 3.1/3.5/3.8-flash + gemma-4 all 503/500
     # "high demand" on the free tier; 2.5-flash is 5/5+5/5 on the run-#12
-    # incident prompts and reliable. Free-tier RPM is ~5 (token bucket) —
-    # v1.7.4's waited-retry absorbs it at eval pacing.
+    # incident prompts and reliable. Run #13 measured the free-tier quota:
+    # generate_content_free_tier_requests limit=20/min for 2.5-flash. 20 RPM
+    # is NOT enough for 7 concurrent incident pipelines — only the first
+    # fix proposal survives; the rest die on context deadlines.
     FAST_MODEL="${FAST_MODEL:-gemini-2.5-flash}"
     FRONTIER_MODEL="${FRONTIER_MODEL:-gemini-2.5-flash}" ;;
   groq)
+    # Run #12 config: 4/9 PRs, best free-tier result so far. gpt-oss-120b
+    # TPM waits killed checkout-api's fix proposer once (context deadline),
+    # but 6/7 pipelines still completed vs Gemini's 1/7 in run #13.
     FAST_MODEL="${FAST_MODEL:-openai/gpt-oss-20b}"
     FRONTIER_MODEL="${FRONTIER_MODEL:-openai/gpt-oss-120b}" ;;
   cerebras)
