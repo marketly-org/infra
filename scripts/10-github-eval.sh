@@ -587,7 +587,7 @@ done
   # log line — the frozen event loop stops logging entirely. The bug's
   # observable effect is liveness-probe failures -> container restarts,
   # which is exactly what the pod-status detector watches for.
-  CHECKOUT_RESTARTS=$(kubectl -n marketly get pods -l app.kubernetes.io/name=checkout-api \
+  CHECKOUT_RESTARTS=$(kubectl -n marketly get pods -l app=checkout-api \
     -o jsonpath='{.items[*].status.containerStatuses[*].restartCount}' 2>/dev/null || echo "")
   CHECKOUT_MAX=0
   for R in $CHECKOUT_RESTARTS; do
