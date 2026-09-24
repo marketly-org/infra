@@ -23,7 +23,10 @@ declare -A EXPECTED_FIX=(
   ["user-api"]="LRU|TTL|setTimeout|eviction"
   ["search-api"]="ok_or|is_none|return Err"
   ["shipping-api"]="isPresent|orElse"
-  ["analytics-worker"]="lock.*order|OrderLock.*InventoryLock|reorder"
+  # Same dual-acceptance as eval-score.py (decision 2026-09-24): the
+  # deadlock is unreachable behind the repo's genuine NoMethodError until
+  # a redis-client API fix (c.call("SET", ...)) merges; that fix scores.
+  ["analytics-worker"]="lock.*order|OrderLock.*InventoryLock|reorder|\.call\(\s*[\"']SET"
   ["notification-worker"]="max_retries.*5"
   ["recommendation-engine"]="shared_mutex|shared_lock|std::mutex"
 )

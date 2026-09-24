@@ -148,6 +148,83 @@ echo "  ✓ celery injector deployed (image: ${NOTIF_IMAGE})"
 # ---------------------------------------------------------------------------
 echo "=== Deploying gRPC injector (recommendation-engine) ==="
 
+# The injector deployment mounts a `recommendation-proto` ConfigMap, but
+# nothing ever created it — the injector sat in ContainerCreating for the
+# ENTIRE soak in runs #12 and #13 (mounting a missing configmap blocks
+# container creation forever), so the recommendation segfault bug was
+# unreachable in both runs. Embed the proto (from the svc repo,
+# src/protos/recommendation.proto) verbatim; keep in sync if it changes.
+cat <<'PROTOEOF' | kubectl apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: recommendation-proto
+  namespace: marketly
+data:
+  recommendation.proto: |
+    syntax = "proto3";
+
+    package marketly.recommendation.v1;
+
+    option java_package = "com.marketly.recommendation.v1";
+
+    // A single recommendation candidate.
+    message RecommendationItem {
+      string sku = 1;
+      string name = 2;
+      string category = 3;
+      double score = 4;          // relevance score in [0,1]
+      int32 price_cents = 5;
+    }
+
+    // Request: produce up to `limit` recommendations for `user_id`,
+    // optionally scoped to a `category`.
+    message RecommendRequest {
+      string user_id = 1;
+      string category = 2;       // optional; empty = all categories
+      int32 limit = 3;           // default 10
+    }
+
+    // Response: ranked list of recommendation items.
+    message RecommendResponse {
+      string user_id = 1;
+      repeated RecommendationItem items = 2;
+      string trace_id = 3;
+    }
+
+    // Request: append a new item to the recommendation candidate pool
+    // (called by the catalog-ingestion pipeline).
+    message AppendItemRequest {
+      RecommendationItem item = 1;
+    }
+
+    message AppendItemResponse {
+      bool accepted = 1;
+      int32 pool_size = 2;
+    }
+
+    service RecommendationService {
+      // Streaming-friendly unary RPC: return up to N recommendations.
+      rpc GetRecommendations(RecommendRequest) returns (RecommendResponse);
+
+      // Append a new candidate to the pool.
+      rpc AppendItem(AppendItemRequest) returns (AppendItemResponse);
+
+      // Liveness probe (k8s).
+      rpc Health(HealthRequest) returns (HealthResponse);
+    }
+
+    message HealthRequest {}
+
+    message HealthResponse {
+      string status = 1;
+      string service = 2;
+      string version = 3;
+      int32 pool_size = 4;
+    }
+PROTOEOF
+echo "  ✓ recommendation-proto configmap created"
+
 cat <<'INJPY' | kubectl apply -f -
 apiVersion: v1
 kind: ConfigMap
