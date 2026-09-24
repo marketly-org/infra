@@ -28,16 +28,21 @@ if os.environ.get("GEMINI_API_KEY"):
     PROVIDERS["gemini"] = {
         "base": "https://generativelanguage.googleapis.com/v1beta/openai",
         "key": os.environ["GEMINI_API_KEY"],
-        # compat endpoint: same models, same quotas as the native API goai uses
-        "models": ["gemini-2.5-flash", "gemini-2.5-flash-lite"],
-        "burst_model": "gemini-2.5-flash-lite",
+        # compat endpoint: same models, same quotas as the native API goai uses.
+        # round 2: 3.5 series (2.5-flash-lite is deprecated for new keys;
+        # 2.5-flash already scored 5/5 + 5/5 in round 1).
+        "models": [m for m in os.environ.get(
+            "GEMINI_MODELS", "gemini-3.5-flash,gemini-3.5-flash-lite"
+            ",gemini-3.8-flash").split(",") if m],
+        "burst_model": "gemini-3.5-flash-lite",
     }
 if os.environ.get("CEREBRAS_API_KEY"):
     PROVIDERS["cerebras"] = {
         "base": "https://api.cerebras.ai/v1",
         "key": os.environ["CEREBRAS_API_KEY"],
         "models": [],          # filled from /models listing
-        "want": ["gpt-oss-120b", "llama-3.3-70b", "qwen-3-27b", "qwen-3.8-27b"],
+        "want": ["gpt-oss-120b", "llama-3.3-70b", "qwen-3-27b", "qwen-3.8-27b",
+                 "zai-glm-4.6"],
         "burst_model": None,   # picked after listing
     }
 
@@ -120,7 +125,12 @@ def post_chat(base, key, model, messages, max_tokens, timeout=180):
         base.rstrip("/") + "/chat/completions",
         data=json.dumps(body).encode(),
         headers={"Authorization": f"Bearer {key}",
-                 "Content-Type": "application/json"})
+                 "Content-Type": "application/json",
+                 # Cerebras sits behind Cloudflare: the default python-urllib
+                 # UA gets error-1010'd. Browser UA for identification only.
+                 "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) "
+                               "AppleWebKit/537.36 (KHTML, like Gecko) "
+                               "Chrome/131.0.0.0 Safari/537.36"})
     t0 = time.time()
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -136,7 +146,10 @@ def post_chat(base, key, model, messages, max_tokens, timeout=180):
 def list_models(base, key):
     req = urllib.request.Request(
         base.rstrip("/") + "/models",
-        headers={"Authorization": f"Bearer {key}"})
+        headers={"Authorization": f"Bearer {key}",
+                 "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) "
+                               "AppleWebKit/537.36 (KHTML, like Gecko) "
+                               "Chrome/131.0.0.0 Safari/537.36"})
     try:
         with urllib.request.urlopen(req, timeout=60) as r:
             return [m.get("id", "") for m in json.loads(r.read().decode()).get("data", [])], None
