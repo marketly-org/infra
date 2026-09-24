@@ -46,7 +46,7 @@ MIN_SANDBOX_LEVEL="${MIN_SANDBOX_LEVEL:-3}"
 RESET_REPOS="${RESET_REPOS:-true}"
 FAST_MODEL="${FAST_MODEL:-openai/gpt-oss-20b}"
 FRONTIER_MODEL="${FRONTIER_MODEL:-openai/gpt-oss-120b}"
-SENTINEL_CHART_VERSION="${SENTINEL_CHART_VERSION:-1.7.3}"
+SENTINEL_CHART_VERSION="${SENTINEL_CHART_VERSION:-1.7.4}"
 SENTINEL_API_TOKEN="marketly-sentinel-token"
 
 # Guard rails
@@ -305,6 +305,105 @@ log "Phase 6.5/10: environment tuning (accelerate the memory-leak bug)"
 kubectl -n marketly set env deploy/user-api NODE_OPTIONS="--max-old-space-size=64"
 kubectl -n marketly rollout status deploy/user-api --timeout=240s
 echo "  user-api heap capped at 64MB (NODE_OPTIONS)"
+# Run #11 post-mortem: with the cap, user-api died of pg connection
+# timeouts (event-loop lag starved pg's 2s connect timeout) before the
+# FATAL heap line, and the investigation misdiagnosed a DB-config bug.
+# The cap STAYS at 64MB: filling the heap faster than the soak window
+# matters more than which signature wins the race, and v1.7.4's runtime
+# context now shows the LLM both NODE_OPTIONS=--max-old-space-size=64
+# and USER_DATABASE_URL — so even a pg-timeout crash can be diagnosed
+# correctly (heap pressure -> connection timeouts) instead of guessed at
+# (canonical-var hallucination).
+
+# ---------------------------------------------------------------- phase 6.6
+log "Phase 6.6/10: checkout slow-sink (trigger the pool/event-loop bug)"
+# Run #7/#10/#11 post-mortem: checkout's planted bug (httpx.Client() with
+# no timeout= in app/clients.py) needs a SLOW downstream to fire. With
+# everything fast-409ing, the bug never exercised and Sentinel instead
+# misdiagnosed the 409 noise. This deploys an 8-second slow inventory
+# stand-in and points checkout's CHECKOUT_INVENTORY_API_URL at it:
+# the sync httpx call inside the async handler blocks the event loop,
+# /health stops responding, the liveness probe (period 10s) fails 3x,
+# and the container restarts — a signal the pod-status detector sees.
+# The ground-truth fix (explicit httpx timeout) is now behaviorally
+# verifiable: with the fix, checkout fails fast and /health stays live.
+kubectl -n marketly apply -f - <<'SLOWSINK'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: slow-inventory-script
+  namespace: marketly
+data:
+  slow.py: |
+    import json, time
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    class H(BaseHTTPRequestHandler):
+        def _slow(self):
+            time.sleep(8)
+            body = json.dumps({"sku": "WIDGET-001", "price_cents": 999,
+                               "stock": 100, "reserved": 0}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        def do_GET(self): self._slow()
+        def do_POST(self): self._slow()
+        def log_message(self, *a): pass
+    HTTPServer(("0.0.0.0", 8080), H).serve_forever()
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: slow-inventory
+  namespace: marketly
+  labels:
+    app.kubernetes.io/name: slow-inventory
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: slow-inventory
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: slow-inventory
+    spec:
+      containers:
+        - name: slow
+          image: python:3.12-slim
+          command: ["python", "/scripts/slow.py"]
+          ports:
+            - containerPort: 8080
+          resources:
+            requests: {cpu: 50m, memory: 32Mi}
+            limits: {cpu: 500m, memory: 64Mi}
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+      volumes:
+        - name: script
+          configMap:
+            name: slow-inventory-script
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: slow-inventory
+  namespace: marketly
+spec:
+  selector:
+    app.kubernetes.io/name: slow-inventory
+  ports:
+    - port: 8080
+      targetPort: 8080
+SLOWSINK
+kubectl -n marketly rollout status deploy/slow-inventory --timeout=240s
+kubectl -n marketly set env deploy/checkout-api \
+  CHECKOUT_INVENTORY_API_URL="http://slow-inventory.marketly.svc.cluster.local:8080"
+kubectl -n marketly rollout status deploy/checkout-api --timeout=240s
+echo "  checkout-api now routed through the 8s slow sink (bug will fire:"
+echo "  event-loop freeze -> liveness failures -> restarts)"
 
 # ---------------------------------------------------------------- phase 7
 log "Phase 7/10: Sentinel (chart $SENTINEL_CHART_VERSION, provider=groq)"
@@ -466,17 +565,16 @@ done
   printf "%-24s %-8s %s\n" "SERVICE" "FIRED?" "SIGNATURE"
   printf "%-24s %-8s %s\n" "-------" "-----" "---------"
   declare -A SIG=(
-    [checkout-api]="MemoryError|pool exhausted"
     [payments-api]="rate_limited"
     [inventory-api]="index out of range"
     [user-api]="Ineffective mark-compacts|FATAL ERROR"
     [search-api]="panicked at"
     [shipping-api]="NoSuchElementException"
-    [analytics-worker]="could not acquire lock|deadlock"
+    [analytics-worker]="could not acquire lock|deadlock|NoMethodError"
     [notification-worker]="send_email.failed|gaierror"
     [recommendation-engine]="Segmentation fault|SIGSEGV"
   )
-  for D in checkout-api payments-api inventory-api user-api search-api \
+  for D in payments-api inventory-api user-api search-api \
            shipping-api analytics-worker notification-worker recommendation-engine; do
     PAT="${SIG[$D]}"
     if grep -qE "$PAT" "$ART/svclog-$D.txt" 2>/dev/null; then
@@ -485,6 +583,21 @@ done
       printf "%-24s %-8s %s\n" "$D" "no" "$PAT"
     fi
   done
+  # checkout-api: with the slow sink (phase 6.6) the signature is NOT a
+  # log line — the frozen event loop stops logging entirely. The bug's
+  # observable effect is liveness-probe failures -> container restarts,
+  # which is exactly what the pod-status detector watches for.
+  CHECKOUT_RESTARTS=$(kubectl -n marketly get pods -l app.kubernetes.io/name=checkout-api \
+    -o jsonpath='{.items[*].status.containerStatuses[*].restartCount}' 2>/dev/null || echo "")
+  CHECKOUT_MAX=0
+  for R in $CHECKOUT_RESTARTS; do
+    [ "$R" -gt "$CHECKOUT_MAX" ] 2>/dev/null && CHECKOUT_MAX=$R
+  done
+  if [ "$CHECKOUT_MAX" -gt 0 ] 2>/dev/null; then
+    echo "checkout-api            YES      event-loop freeze -> liveness restarts (max restartCount=$CHECKOUT_MAX)"
+  else
+    echo "checkout-api            no       expected: liveness restarts via slow sink (none observed)"
+  fi
   # Silent-bug check: inventory oversell leaves no log and no crash — the
   # only evidence is reserved > stock in the DB.
   OVERSOLD=$(kubectl -n marketly exec deploy/postgres -- env PGPASSWORD=marketly-eval \

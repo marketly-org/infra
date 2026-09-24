@@ -3,26 +3,33 @@
 This file documents the exact bug + expected fix for each service. The
 `04-verify-prs.sh` script checks Sentinel's PRs against these.
 
-**Detectability (post run #7, 2026-09-23)** — Sentinel v1.7.x detects
-incidents from pod logs (error-pattern streaming) and pod status
+**Detectability (post run #12 prep, 2026-09-24)** — Sentinel v1.7.x
+detects incidents from pod logs (error-pattern streaming) and pod status
 (CrashLoopBackOff / OOMKilled / restarts). Bugs whose only symptom is
 neither of those are *undetectable by design* until synthetic probing /
 golden-signal checks land (planned v1.8):
 
 - **Detectable**: search-api, notification-worker, analytics-worker,
-  shipping-api, user-api, recommendation-engine.
+  shipping-api, user-api, recommendation-engine, checkout-api (since
+  run-#12 harness: the slow-sink freezes the event loop → /health stops
+  responding → liveness-probe failures → container restarts, which the
+  pod-status detector sees).
 - **Undetectable (no log line, no crash)**: inventory-api (silent
-  oversell), payments-api (no logging code), checkout-api (freezes
-  without logging when a downstream hangs).
+  oversell), payments-api (no logging code).
 
 ## checkout-api (Python/FastAPI)
 
 - **Bug**: `app/clients.py` — `httpx.Client()` created without `timeout=` parameter. When downstream services are slow, connections pile up → pool exhaustion → OOM.
-- **Symptom**: `MemoryError: Unable to allocate 16.0 MiB` + `connection pool exhausted`
-  — **known gap (run #7): the sync httpx client is called directly
-  inside an `async def` handler, so a hanging downstream blocks the
-  event loop — the service freezes without logging or crashing long
-  before any memory grows.** Undetectable by v1.7.x.
+- **Symptom (post run-#12 harness)**: the eval deploys an 8-second
+  slow-inventory sink (phase 6.6) and points
+  `CHECKOUT_INVENTORY_API_URL` at it. The sync httpx call inside the
+  `async def` handler blocks the event loop for the full 8s per call;
+  with continuous traffic the loop is blocked nearly 100% of the time,
+  `/health` starves, the liveness probe (period 10s) fails 3x, and the
+  container restarts. **Detection path: pod status (restarts), not
+  logs — the frozen loop stops logging entirely.** The older
+  `MemoryError`/`pool exhausted` signature is unreachable for the same
+  run-#7 reason (per-request `InventoryClient()` means no shared pool).
 - **Fix**: Add explicit timeout to the httpx.Client constructor:
   ```python
   self._client = httpx.Client(timeout=httpx.Timeout(connect=2.0, read=5.0))

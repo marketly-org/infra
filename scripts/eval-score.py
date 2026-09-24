@@ -37,7 +37,15 @@ EXPECTED = {
     "user-api": "LRU|TTL|setTimeout|eviction",
     "search-api": "ok_or|is_none|return Err",
     "shipping-api": "isPresent|orElseThrow|if.*isPresent",
-    "analytics-worker": "lock.*order|OrderLock.*InventoryLock|reorder",
+    # analytics-worker: two acceptable fixes (decision 2026-09-24). The
+    # planted deadlock (lock-order fix) is UNREACHABLE behind the repo's
+    # genuine NoMethodError — distributed_lock.rb calls the old redis-gem
+    # .set API on a redis-client object, so every job dies before the
+    # deadlock can engage. A correct fix of THAT bug (c.call("SET", ...)
+    # or equivalent redis-client API usage) is a genuine, correct fix of
+    # the observed error and scores YES. The deadlock becomes reachable
+    # (and scorable) only after that fix merges.
+    "analytics-worker": "lock.*order|OrderLock.*InventoryLock|reorder|\\.call\\(\\s*[\"']SET",
     "notification-worker": "max_retries.*5|max_retries=5",
     "recommendation-engine": "shared_mutex|shared_lock|std::mutex",
 }

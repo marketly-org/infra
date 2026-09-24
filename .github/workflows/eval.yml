@@ -36,7 +36,7 @@ on:
         default: "openai/gpt-oss-120b"
       sentinel_chart_version:
         description: "Sentinel helm chart version to install"
-        default: "1.7.3"
+        default: "1.7.4"
 
 concurrency:
   group: marketly-eval
@@ -80,6 +80,25 @@ jobs:
           cluster_name: marketly-eval
           config: kind-config.yaml
           wait: 60s
+
+      - name: Pre-pull public images into kind
+        # Run #11: grpc-injector spent the ENTIRE 45-minute soak stuck in
+        # ContainerCreating — Docker Hub rate-limited the python:3.12-slim
+        # pull inside the runner. 27k calls planned, zero made. Loading the
+        # images into the node's containerd sidesteps Docker Hub entirely.
+        # Best-effort (|| true): a pre-pull failure falls back to a normal
+        # pull at deploy time, which usually still works.
+        run: |
+          for IMG in python:3.12-slim redis:7-alpine busybox:1.36 \
+                     postgres:16-alpine curlimages/curl:8.10.1; do
+            echo "pre-pulling $IMG..."
+            if docker pull "$IMG" 2>/dev/null; then
+              kind load docker-image "$IMG" --name marketly-eval
+              echo "  loaded into kind node"
+            else
+              echo "  WARNING: pre-pull failed for $IMG (pods will pull at deploy time)"
+            fi
+          done
 
       - name: Run eval
         env:
