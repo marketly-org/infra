@@ -75,7 +75,7 @@ case "$LLM_PROVIDER" in
     FRONTIER_MODEL="${FRONTIER_MODEL:-gpt-oss-120b}" ;;
   *) echo "ERROR: unknown LLM_PROVIDER '$LLM_PROVIDER'"; exit 1 ;;
 esac
-SENTINEL_CHART_VERSION="${SENTINEL_CHART_VERSION:-1.7.4}"
+SENTINEL_CHART_VERSION="${SENTINEL_CHART_VERSION:-1.7.5}"
 SENTINEL_API_TOKEN="marketly-sentinel-token"
 
 # Guard rails
@@ -544,7 +544,11 @@ esac
 
 helm repo add sentinel https://karimzakzouk.github.io/sentinel/ 2>/dev/null || true
 helm repo update >/dev/null
-# --- LLM failover pool (chart 1.7.4: SENTINEL_LLM_PROVIDERS) ---------------
+# --- LLM failover pool (SENTINEL_LLM_PROVIDERS) ----------------------------
+# NOTE: requires chart >= 1.7.5. In 1.7.4 the pool was dead code —
+# loadLLMProviders() existed but Load() never called it, so the env var
+# was delivered yet silently ignored (runs #15 and #16 both booted in
+# single-provider mode with a perfectly delivered env var).
 # Stacks a second provider as overflow for the primary. When the primary
 # hard-fails a call (retries exhausted — e.g. Groq TPM starvation under 5+
 # concurrent fix proposals, which killed checkout-api in runs #12 and #14),

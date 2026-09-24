@@ -42,7 +42,7 @@ on:
         default: ""
       sentinel_chart_version:
         description: "Sentinel helm chart version to install"
-        default: "1.7.4"
+        default: "1.7.5"
 
 concurrency:
   group: marketly-eval
