@@ -82,6 +82,12 @@ golden-signal checks land (planned v1.8):
 
 - **Bug**: `app/workers/payment_worker.rb` — acquires `InventoryLock` then `OrderLock`. `OrderWorker` acquires them in opposite order. Deadlock under concurrency.
 - **Symptom**: `ERROR -- : Job failed: deadlock detected`
+  — **known gap (run #10): the deadlock is unreachable.** The service's
+  own `app/lock/distributed_lock.rb` calls the old redis-gem API
+  (`.set(key, token, nx: true, px: ...)`) against a redis-client object,
+  so every job dies first with `NoMethodError: undefined method 'set'
+  for an instance of RedisClient`. That is a genuine (unplanted) bug in
+  the repo; Sentinel may legitimately investigate and fix IT instead.
 - **Fix**: Make `PaymentWorker` acquire `OrderLock` before `InventoryLock` (same order as `OrderWorker`).
 
 ## notification-worker (Python/Celery)

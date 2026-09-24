@@ -36,7 +36,7 @@ on:
         default: "openai/gpt-oss-120b"
       sentinel_chart_version:
         description: "Sentinel helm chart version to install"
-        default: "1.7.2"
+        default: "1.7.3"
 
 concurrency:
   group: marketly-eval

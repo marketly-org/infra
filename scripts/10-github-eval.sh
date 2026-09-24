@@ -46,7 +46,7 @@ MIN_SANDBOX_LEVEL="${MIN_SANDBOX_LEVEL:-3}"
 RESET_REPOS="${RESET_REPOS:-true}"
 FAST_MODEL="${FAST_MODEL:-openai/gpt-oss-20b}"
 FRONTIER_MODEL="${FRONTIER_MODEL:-openai/gpt-oss-120b}"
-SENTINEL_CHART_VERSION="${SENTINEL_CHART_VERSION:-1.7.2}"
+SENTINEL_CHART_VERSION="${SENTINEL_CHART_VERSION:-1.7.3}"
 SENTINEL_API_TOKEN="marketly-sentinel-token"
 
 # Guard rails
@@ -402,7 +402,7 @@ print(f"  total incidents: {len(inc)}")'
 SOAK_END=$((SECONDS + WAIT_MINUTES * 60))
 NEXT_INC=$((SECONDS + 10))
 NEXT_DIAG=$((SECONDS + 60))
-NEXT_RESTOCK=$((SECONDS + 60))
+NEXT_RESTOCK=$((SECONDS + 45))
 while [ $SECONDS -lt $SOAK_END ]; do
   sleep 10
   # Replenish inventory availability every 60s: reserve-only traffic
@@ -410,7 +410,7 @@ while [ $SECONDS -lt $SOAK_END ]; do
   # 409s and (a) checkout's chain stalls at reserve and (b) the oversell
   # race never gets another boundary to fire on.
   if [ $SECONDS -ge $NEXT_RESTOCK ]; then
-    NEXT_RESTOCK=$((SECONDS + 60))
+    NEXT_RESTOCK=$((SECONDS + 45))
     kubectl -n marketly exec deploy/postgres -- env PGPASSWORD=marketly-eval \
       psql -U marketly -d inventory -c "UPDATE products SET reserved = 0" >/dev/null 2>&1 || true
   fi

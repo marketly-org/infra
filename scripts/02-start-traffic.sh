@@ -96,13 +96,13 @@ data:
           2) sku=WIDGET-001 ;;
         esac
         i=\$((i + 1))
-        for b in 1 2 3 4 5 6; do
+        for b in 1 2 3; do
           curl -sf -X POST "http://inventory-api.${NS}:8080/reserve" \\
             -H "Content-Type: application/json" \\
             -d "{\"sku\":\"\$sku\",\"quantity\":1}" || true &
         done
         wait
-        sleep 2
+        sleep 3
       done
     }
 

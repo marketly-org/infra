@@ -11,17 +11,21 @@ REPOS=(
   "recommendation-engine"
 )
 
-# Ground-truth expected fixes
+# Ground-truth expected fixes.
+# NOTE: these are matched with `grep -qE` (EXTENDED regex) — alternation
+# is a bare `|`. The original `\|` form is a LITERAL pipe in ERE and
+# never matched anything, which silently zeroed the score for every
+# multi-alternative service in runs #1-#10.
 declare -A EXPECTED_FIX=(
   ["checkout-api"]="timeout"
   ["payments-api"]="IdempotencyKey"
   ["inventory-api"]="UPDATE.*reserved"
-  ["user-api"]="LRU\|TTL\|setTimeout\|eviction"
-  ["search-api"]="ok_or\|is_none\|return Err"
-  ["shipping-api"]="isPresent\|orElseThrow\|if.*isPresent"
-  ["analytics-worker"]="lock.*order\|OrderLock.*InventoryLock\|reorder"
-  ["notification-worker"]="max_retries.*5\|max_retries=5"
-  ["recommendation-engine"]="shared_mutex\|shared_lock\|std::mutex"
+  ["user-api"]="LRU|TTL|setTimeout|eviction"
+  ["search-api"]="ok_or|is_none|return Err"
+  ["shipping-api"]="isPresent|orElse"
+  ["analytics-worker"]="lock.*order|OrderLock.*InventoryLock|reorder"
+  ["notification-worker"]="max_retries.*5"
+  ["recommendation-engine"]="shared_mutex|shared_lock|std::mutex"
 )
 
 echo "=== Sentinel PR verification ==="
