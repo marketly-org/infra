@@ -1,0 +1,44 @@
+name: LLM Provider Bench
+
+# Quick provider/model vetting on a US runner (the sandbox IP is geo-blocked
+# by Google and Cloudflare-challenged by Cerebras, but the eval itself always
+# runs here). Tests the same two real run-#12 incident prompts as the
+# OpenRouter bench, plus a burst test that captures raw 429 bodies so we can
+# verify Sentinel v1.7.4's rate-limit error detection.
+#
+# Secrets required:
+#   GEMINI_API_KEY    Google AI Studio key (optional)
+#   CEREBRAS_API_KEY  Cerebras key (optional)
+
+on:
+  workflow_dispatch:
+    inputs:
+      providers:
+        description: "Comma list: gemini,cerebras"
+        default: "gemini,cerebras"
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: Bench providers
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run provider bench
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          PROVIDERS: ${{ inputs.providers }}
+        run: python3 scripts/provider-bench.py
+
+      - name: Upload bench results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results
+          path: bench-results/
+          if-no-files-found: ignore
