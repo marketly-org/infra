@@ -27,6 +27,10 @@
 # Optional env (defaults):
 #   WAIT_MINUTES=45  REPLICAS=2  MIN_SANDBOX_LEVEL=3  RESET_REPOS=true
 #   FAST_MODEL / FRONTIER_MODEL  per-provider defaults below
+#   MAX_FIX_SERVICES=3  distinct services sentinel may run fix pipelines for
+#                       (0 = unlimited; needs chart >= 1.7.7 — gate below
+#                       fatals if the budget log line is missing)
+#   OPENROUTER_API_KEY  optional 3rd pool provider (free ling models)
 #
 # Exit code: 0 = eval ran (score is in the summary, whatever it is);
 # 1 = harness broke (nothing deployed, or zero incidents detected).
@@ -75,8 +79,14 @@ case "$LLM_PROVIDER" in
     FRONTIER_MODEL="${FRONTIER_MODEL:-gpt-oss-120b}" ;;
   *) echo "ERROR: unknown LLM_PROVIDER '$LLM_PROVIDER'"; exit 1 ;;
 esac
-SENTINEL_CHART_VERSION="${SENTINEL_CHART_VERSION:-1.7.6}"
+SENTINEL_CHART_VERSION="${SENTINEL_CHART_VERSION:-1.7.7}"
 SENTINEL_API_TOKEN="marketly-sentinel-token"
+# Distinct services sentinel may run the LLM fix pipeline for. Default 3:
+# each pipeline costs 30-60k tokens and they share the provider's DAILY
+# org quota — run #20 (uncapped, 6 incidents) hit Groq TPD exhaustion
+# with 0 PRs. 3 services ≈ 100-150k tokens: fits a fresh 200k TPD day
+# even with some spill onto the overflow providers. 0 = unlimited.
+MAX_FIX_SERVICES="${MAX_FIX_SERVICES:-3}"
 
 # Guard rails
 WAIT_MINUTES=$(( WAIT_MINUTES > 240 ? 240 : WAIT_MINUTES ))
@@ -552,29 +562,38 @@ helm repo update >/dev/null
 # provider, so the gemini overflow always died with 'unexpected model
 # name format' (run #19: all 6 incidents failed, 0/9). 1.7.6 remaps the
 # model per provider entry.
-# Stacks a second provider as overflow for the primary. When the primary
-# hard-fails a call (retries exhausted — e.g. Groq TPM starvation under 5+
-# concurrent fix proposals, which killed checkout-api in runs #12 and #14),
-# the pool's circuit breaker fails over instead of sleeping out the window.
-# The primary is whoever LLM_PROVIDER names; the overflow is the other free
-# key when we hold one. Provider entries carry their own models.
-PROVIDERS_SET_JSON=""
-PROVIDERS_SETS=()
-OVERFLOW_KEY=""
-OVERFLOW_MODELS=""
+# Stacks overflow providers behind the primary. When the primary
+# hard-fails a call (retries exhausted — e.g. Groq TPM/TPD starvation,
+# which killed checkout-api in runs #12/#14 and EVERY PR in run #20),
+# the pool's circuit breaker fails over instead of sleeping out the
+# window. Entries carry their own models. Three layers when all keys
+# are present:
+#   1. $LLM_PROVIDER (primary)
+#   2. the other big-provider key (groq <-> gemini)
+#   3. OpenRouter free tier — inclusionai/ling-3.0-flash-fin:free, the
+#      2026-09-25 bench winner: 2/2 on the real run-#12 incident prompts,
+#      3.4s/2.4s, reasoning arrives in message.reasoning (separate field)
+#      so it cannot leak into content. Daily cap ~50 req: only reached
+#      when BOTH big providers are down, which is exactly when it's
+#      worth spending.
+POOL_ENTRIES=("{\"id\":\"primary\",\"provider\":\"$LLM_PROVIDER\",\"apiKey\":\"$LLM_API_KEY\",\"fastModel\":\"$FAST_MODEL\",\"frontierModel\":\"$FRONTIER_MODEL\",\"priority\":1}")
 case "$LLM_PROVIDER" in
   groq)
     if [ -n "${GEMINI_API_KEY:-}" ]; then
-      OVERFLOW_KEY="$GEMINI_API_KEY"; OVERFLOW_MODELS='"fastModel":"gemini-2.5-flash","frontierModel":"gemini-2.5-flash"'
+      POOL_ENTRIES+=("{\"id\":\"gemini-overflow\",\"provider\":\"gemini\",\"apiKey\":\"$GEMINI_API_KEY\",\"fastModel\":\"gemini-2.5-flash\",\"frontierModel\":\"gemini-2.5-flash\",\"priority\":2}")
     fi ;;
   gemini)
     if [ -n "${GROQ_API_KEY:-}" ]; then
-      OVERFLOW_KEY="$GROQ_API_KEY"; OVERFLOW_MODELS='"fastModel":"openai/gpt-oss-20b","frontierModel":"openai/gpt-oss-120b"'
+      POOL_ENTRIES+=("{\"id\":\"groq-overflow\",\"provider\":\"groq\",\"apiKey\":\"$GROQ_API_KEY\",\"fastModel\":\"openai/gpt-oss-20b\",\"frontierModel\":\"openai/gpt-oss-120b\",\"priority\":2}")
     fi ;;
 esac
-if [ -n "$OVERFLOW_KEY" ]; then
-  OVERFLOW_PROVIDER="$([ "$LLM_PROVIDER" = groq ] && echo gemini || echo groq)"
-  PROVIDERS_SET_JSON="[{\"id\":\"primary\",\"provider\":\"$LLM_PROVIDER\",\"apiKey\":\"$LLM_API_KEY\",\"fastModel\":\"$FAST_MODEL\",\"frontierModel\":\"$FRONTIER_MODEL\",\"priority\":1},{\"id\":\"overflow\",\"provider\":\"$OVERFLOW_PROVIDER\",\"apiKey\":\"$OVERFLOW_KEY\",$OVERFLOW_MODELS,\"priority\":2}]"
+if [ -n "${OPENROUTER_API_KEY:-}" ]; then
+  OR_PRIO=$(( ${#POOL_ENTRIES[@]} + 1 ))
+  POOL_ENTRIES+=("{\"id\":\"openrouter-overflow\",\"provider\":\"openrouter\",\"apiKey\":\"$OPENROUTER_API_KEY\",\"fastModel\":\"inclusionai/ling-3.0-flash-fin:free\",\"frontierModel\":\"inclusionai/ling-3.0-flash-fin:free\",\"priority\":$OR_PRIO}")
+fi
+PROVIDERS_SETS=()
+if [ "${#POOL_ENTRIES[@]}" -gt 1 ]; then
+  PROVIDERS_SET_JSON="[$(IFS=,; echo "${POOL_ENTRIES[*]}")]"
   # MUST go through an array: in an unquoted ${var:+word} the double quotes
   # around the value are parsed as shell quote OPERATORS, splitting the
   # flag into three argv pieces — helm then receives
@@ -582,7 +601,7 @@ if [ -n "$OVERFLOW_KEY" ]; then
   # and the pod boots in single-provider mode (run #15: pool "configured",
   # log said disabled, checkout-api died on TPM for the third time).
   PROVIDERS_SETS+=(--set-json "sentinel.llm.providers=$PROVIDERS_SET_JSON")
-  echo "  llm pool: $LLM_PROVIDER (primary) + $OVERFLOW_PROVIDER (overflow)"
+  echo "  llm pool: ${#POOL_ENTRIES[@]} providers ($LLM_PROVIDER primary + $(( ${#POOL_ENTRIES[@]} - 1 )) overflow)"
 fi
 
 # --- Sandbox (Kaniko) registry auth -----------------------------------------
@@ -621,10 +640,11 @@ helm upgrade --install sentinel sentinel/sentinel \
   --set sentinel.llm.fastModel="$FAST_MODEL" \
   --set sentinel.llm.frontierModel="$FRONTIER_MODEL" \
   --set sentinel.autoMerge.minSandboxLevel="$MIN_SANDBOX_LEVEL" \
+  --set sentinel.maxFixServices="$MAX_FIX_SERVICES" \
   "${PROVIDERS_SETS[@]}" \
   "${SANDBOX_SETS[@]}" \
   --wait --timeout 300s
-echo "  sentinel installed"
+echo "  sentinel installed (maxFixServices=$MAX_FIX_SERVICES)"
 
 # The chart has no knobs for the pipeline deadlines (as of 1.7.4), so they
 # are patched in post-install. Run #14 post-mortem: 5 concurrent gpt-oss-120b
@@ -632,11 +652,15 @@ echo "  sentinel installed"
 # 2/2 runs) exhausted its 5-min context budget while waiting on rate-limit
 # windows — attempts 4/5/6 failed in ~2ms each. The investigation timeout is
 # the parent budget, so it must rise too (fix-proposer ctx derives from it).
+# SENTINEL_MAX_FIX_SERVICES is set via helm on chart >= 1.7.7, but restating
+# it here makes the patch chart-version-independent (a 1.7.6 chart silently
+# ignores the helm value; this still arms the budget in the running pod).
 kubectl -n sentinel set env deploy/sentinel \
   SENTINEL_FIX_PROPOSER_TIMEOUT="${SENTINEL_FIX_PROPOSER_TIMEOUT:-900}" \
-  SENTINEL_INVESTIGATION_TIMEOUT="${SENTINEL_INVESTIGATION_TIMEOUT:-1200}"
+  SENTINEL_INVESTIGATION_TIMEOUT="${SENTINEL_INVESTIGATION_TIMEOUT:-1200}" \
+  SENTINEL_MAX_FIX_SERVICES="$MAX_FIX_SERVICES"
 kubectl -n sentinel rollout status deploy/sentinel --timeout=180s
-echo "  sentinel deadlines: fix-proposer 900s, investigation 1200s"
+echo "  sentinel deadlines: fix-proposer 900s, investigation 1200s; fix budget: $MAX_FIX_SERVICES services"
 
   # Image/chart drift guard: the pod's self-reported version must equal the
   # chart version (values-file tag drift once silently ran an old binary).
@@ -661,6 +685,30 @@ echo "  sentinel deadlines: fix-proposer 900s, investigation 1200s"
     exit 1
   fi
   echo "  sentinel binary: $SENTINEL_CHART_VERSION (verified in startup log)"
+
+  # Fix-budget guard, same philosophy as the version gate: an uncapped run
+  # against a shared daily quota is a guaranteed waste (run #20: every fix
+  # proposal 429'd, 0 PRs, 25 minutes burned). If MAX_FIX_SERVICES>0 but the
+  # budget log line is absent, the env never reached the pod (old chart
+  # template, failed rollout, values shadowing) — fail NOW, not at minute 25.
+  if [ "$MAX_FIX_SERVICES" -gt 0 ]; then
+    BUDGET_OK=""
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      sleep 2
+      BOOT_LOGS="$(kubectl -n sentinel logs deploy/sentinel 2>/dev/null || true)"
+      if [[ "$BOOT_LOGS" == *"fix-service budget enabled"* ]]; then
+        BUDGET_OK="yes"; break
+      fi
+    done
+    if [ -n "$BUDGET_OK" ]; then
+      echo "  fix budget: ACTIVE (cap $MAX_FIX_SERVICES services, verified in startup log)"
+    else
+      echo "  FATAL: MAX_FIX_SERVICES=$MAX_FIX_SERVICES but the budget never armed."
+      echo "  (chart < 1.7.7 ignores sentinel.maxFixServices and the kubectl set env"
+      echo "   patch didn't take — running uncapped would just re-run #20)"
+      exit 1
+    fi
+  fi
 
 
 # --- Post-install verification + self-heal (run #15 post-mortem) ------------

@@ -12,6 +12,7 @@ name: Sentinel Eval (kind)
 #   GROQ_API_KEY           Groq API key (provider=groq)
 #   GEMINI_API_KEY         Google AI Studio key (provider=gemini, default)
 #   CEREBRAS_API_KEY       Cerebras key (provider=cerebras, needs billing)
+#   OPENROUTER_API_KEY     3rd pool overflow (free ling models, priority 3)
 #
 # Run #1 is a shakeout run: expect to iterate on boot/trigger issues before
 # scores become meaningful. Costs ~60-110 runner-minutes per run.
@@ -42,7 +43,10 @@ on:
         default: ""
       sentinel_chart_version:
         description: "Sentinel helm chart version to install"
-        default: "1.7.6"
+        default: "1.7.7"
+      max_fix_services:
+        description: "Max distinct services sentinel runs fix pipelines for (0=unlimited; caps LLM spend — run #20 drained Groq's daily TPD and opened 0 PRs)"
+        default: "3"
 
 concurrency:
   group: marketly-eval
@@ -113,6 +117,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
           WAIT_MINUTES: ${{ inputs.wait_minutes }}
@@ -122,6 +127,7 @@ jobs:
           FAST_MODEL: ${{ inputs.fast_model }}
           FRONTIER_MODEL: ${{ inputs.frontier_model }}
           SENTINEL_CHART_VERSION: ${{ inputs.sentinel_chart_version }}
+          MAX_FIX_SERVICES: ${{ inputs.max_fix_services }}
         run: bash scripts/10-github-eval.sh
 
       - name: Upload eval artifacts
