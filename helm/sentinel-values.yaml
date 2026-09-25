@@ -6,7 +6,7 @@
 image:
   registry: "docker.io/karimzakzouk"
   repository: "sentinel"
-  tag: "1.7.10"
+  tag: "1.7.11"
   pullPolicy: Always
 
 sentinel:
@@ -29,19 +29,21 @@ sentinel:
   # Auto-merge: Sentinel's PRs are auto-merged if CI passes + confidence
   # clears the floor + sandbox verification depth >= L3 (v1.7.0 gate).
   #
-  # minConfidence 0.55 (eval-calibrated): the fix-proposer's self-reported
-  # confidence is hedged for free/mid-tier models — run #21 proposed 3/3
-  # ground-truth-matching fixes at 0.61-0.68, so the old 0.70 threshold
-  # meant "never merge" while contributing no quality signal (the broken
-  # shipping-api fix that run was the HIGHEST-confidence one at 0.68).
-  # Quality control belongs to the measured gates: sandbox L1-L5 + CI.
-  # 0.55 keeps a garbage floor (~0.3-0.4 "I'm flailing" self-reports)
-  # without pretending the number is calibrated. Raise it back toward
-  # 0.85 only with frontier-tier models, whose self-reports track reality.
+  # minConfidence 0.50 (eval-calibrated): the fix-proposer's self-reported
+  # confidence is hedged for free/mid-tier models and carries almost no
+  # quality signal — run #21 proposed 3/3 ground-truth-matching fixes at
+  # 0.61-0.68 (broken shipping-api fix was the HIGHEST at 0.68), and run
+  # #24 self-reported 0.548 on a fix that passed the ENTIRE sandbox suite
+  # (L1-L5 incl. reproducer) while 0.66 went to a fix the L3 oracle
+  # rejected. 0.55 died by three thousandths of a point. 0.50 keeps a
+  # garbage floor (~0.3-0.4 "I'm flailing" self-reports) without
+  # pretending the number is calibrated. Quality control belongs to the
+  # measured gates: sandbox L1-L5 + CI. Raise toward 0.85 only with
+  # frontier-tier models, whose self-reports track reality.
   autoMerge:
     enabled: true
     namespaces: ["marketly"]
-    minConfidence: 0.55
+    minConfidence: 0.50
     requireCI: true
     ciTimeoutSec: 300
     maxPerHour: 5

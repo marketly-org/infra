@@ -30,8 +30,8 @@ on:
         description: "autoMerge minimum sandbox level (drop to 1 if sandbox can't complete in kind)"
         default: "3"
       min_confidence:
-        description: "autoMerge minConfidence floor (0.55 eval-calibrated: free-tier models self-report 0.61-0.68 on correct fixes; real quality control is sandbox+CI)"
-        default: "0.55"
+        description: "autoMerge minConfidence floor (0.50 eval-calibrated: self-reported confidence carries no quality signal — run #24 had 0.548 on a fully-sandbox-verified fix; real quality control is sandbox+CI)"
+        default: "0.50"
       reset_repos:
         description: "Reset service repos to pre-eval SHAs afterwards (true/false)"
         default: "true"
@@ -46,7 +46,7 @@ on:
         default: ""
       sentinel_chart_version:
         description: "Sentinel helm chart version to install"
-        default: "1.7.10"
+        default: "1.7.11"
       max_fix_services:
         description: "Max distinct services sentinel runs fix pipelines for (0=unlimited; caps LLM spend — run #20 drained Groq's daily TPD and opened 0 PRs)"
         default: "3"

@@ -79,7 +79,7 @@ case "$LLM_PROVIDER" in
     FRONTIER_MODEL="${FRONTIER_MODEL:-gpt-oss-120b}" ;;
   *) echo "ERROR: unknown LLM_PROVIDER '$LLM_PROVIDER'"; exit 1 ;;
 esac
-SENTINEL_CHART_VERSION="${SENTINEL_CHART_VERSION:-1.7.10}"
+SENTINEL_CHART_VERSION="${SENTINEL_CHART_VERSION:-1.7.11}"
 SENTINEL_API_TOKEN="marketly-sentinel-token"
 # Distinct services sentinel may run the LLM fix pipeline for. Default 3:
 # each pipeline costs 30-60k tokens and they share the provider's DAILY
