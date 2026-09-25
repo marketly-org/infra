@@ -46,7 +46,7 @@ on:
         default: ""
       sentinel_chart_version:
         description: "Sentinel helm chart version to install"
-        default: "1.7.12"
+        default: "1.7.13"
       max_fix_services:
         description: "Max distinct services sentinel runs fix pipelines for (0=unlimited; caps LLM spend — run #20 drained Groq's daily TPD and opened 0 PRs)"
         default: "3"

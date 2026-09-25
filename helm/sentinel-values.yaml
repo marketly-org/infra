@@ -6,7 +6,7 @@
 image:
   registry: "docker.io/karimzakzouk"
   repository: "sentinel"
-  tag: "1.7.12"
+  tag: "1.7.13"
   pullPolicy: Always
 
 sentinel:
@@ -65,9 +65,24 @@ sentinel:
   # services' merges for the eval's whole window.
   postDeployCheck:
     enabled: true
-    durationSec: 420
+    # 900s: user-api's leak-to-crash cycle is ~8.5min — the 420s window
+    # missed the first crash of the merged (wrong) fix by 80 seconds in
+    # run #27, so a hallucinated fix stayed merged.
+    durationSec: 900
     regressionCooldown: false
     revertAutoMerge: true
+
+  # v1.7.13 repo CI checks (pre-PR oracle): run the repo's own fmt + test
+  # suite against the fix branch before opening the PR. New failures vs
+  # the base branch block + feed the fix-proposer retry loop. This moves
+  # CI's oracle before the PR — run #27's three GT-correct fixes all died
+  # in CI on things the sandbox never checked.
+  repoChecks:
+    enabled: true
+    required: true
+    # Toolchain pods install deps before running tests (maven/rspec/jest);
+    # 900s covers a cold maven run.
+    timeoutSec: 900
 
   # L2 safe-actions (immediate remediation)
   safeActions:
