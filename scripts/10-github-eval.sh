@@ -79,7 +79,7 @@ case "$LLM_PROVIDER" in
     FRONTIER_MODEL="${FRONTIER_MODEL:-gpt-oss-120b}" ;;
   *) echo "ERROR: unknown LLM_PROVIDER '$LLM_PROVIDER'"; exit 1 ;;
 esac
-SENTINEL_CHART_VERSION="${SENTINEL_CHART_VERSION:-1.7.7}"
+SENTINEL_CHART_VERSION="${SENTINEL_CHART_VERSION:-1.7.8}"
 SENTINEL_API_TOKEN="marketly-sentinel-token"
 # Distinct services sentinel may run the LLM fix pipeline for. Default 3:
 # each pipeline costs 30-60k tokens and they share the provider's DAILY
@@ -87,6 +87,13 @@ SENTINEL_API_TOKEN="marketly-sentinel-token"
 # with 0 PRs. 3 services ≈ 100-150k tokens: fits a fresh 200k TPD day
 # even with some spill onto the overflow providers. 0 = unlimited.
 MAX_FIX_SERVICES="${MAX_FIX_SERVICES:-3}"
+# autoMerge confidence floor. 0.55 is eval-calibrated: free-tier
+# fix-proposers self-report 0.61-0.68 on fixes that match ground truth
+# (run #21: 3/3 at those scores), so 0.70 = "never merge" with zero
+# quality signal — the highest-confidence fix that run was the broken
+# one. The measured gates (sandbox L1-L5 + CI) do the real filtering;
+# this only floors genuine "I'm flailing" ~0.3-0.4 self-reports.
+MIN_CONFIDENCE="${MIN_CONFIDENCE:-0.55}"
 
 # Guard rails
 WAIT_MINUTES=$(( WAIT_MINUTES > 240 ? 240 : WAIT_MINUTES ))
@@ -640,6 +647,7 @@ helm upgrade --install sentinel sentinel/sentinel \
   --set sentinel.llm.fastModel="$FAST_MODEL" \
   --set sentinel.llm.frontierModel="$FRONTIER_MODEL" \
   --set sentinel.autoMerge.minSandboxLevel="$MIN_SANDBOX_LEVEL" \
+  --set sentinel.autoMerge.minConfidence="$MIN_CONFIDENCE" \
   --set sentinel.maxFixServices="$MAX_FIX_SERVICES" \
   "${PROVIDERS_SETS[@]}" \
   "${SANDBOX_SETS[@]}" \
