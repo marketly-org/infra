@@ -123,7 +123,7 @@ def main(art_dir):
         rc = ((inc or {}).get("state") or {}).get("root_cause") or {}
         conf = rc.get("confidence")
 
-        pr_num, pr_title, pr_url, pr_state = "-", "", "", "-"
+        pr_num, pr_title, pr_url, pr_state, pr_merged = "-", "", "", "-", "-"
         fix_match, note = "no PR", ""
 
         try:
@@ -142,6 +142,9 @@ def main(art_dir):
                 pr_title = pr["title"]
                 pr_url = pr["html_url"]
                 pr_state = pr.get("state", "-")
+                # merged PRs also report state=closed; merged_at distinguishes
+                # "auto-merged, deployed, recovered" from "closed unmerged".
+                pr_merged = (pr.get("merged_at") or "-") if pr_state == "closed" else "-"
                 diff = api(
                     f"https://api.github.com/repos/{ORG}/{repo}/pulls/{pr_num}",
                     accept="application/vnd.github.v3.diff")
@@ -163,6 +166,7 @@ def main(art_dir):
             "confidence": conf,
             "pr": pr_num,
             "pr_state": pr_state,
+            "pr_merged": pr_merged,
             "pr_url": pr_url,
             "pr_title": pr_title,
             "fix_matches": fix_match,
@@ -174,18 +178,20 @@ def main(art_dir):
     lines = [
         "## Sentinel eval — results",
         "",
-        "| Service | Incident | Status | Conf | PR | PR state | Fix matches ground truth |",
-        "|---|---|---|---|---|---|---|",
+        "| Service | Incident | Status | Conf | PR | PR state | Merged | Fix matches ground truth |",
+        "|---|---|---|---|---|---|---|---|",
     ]
+    n_merged = sum(1 for r in rows if r.get("pr_merged") not in ("-", None))
     for r in rows:
         conf = f"{r['confidence']:.0%}" if isinstance(r["confidence"], (int, float)) else "-"
         pr = f"[#{r['pr']}]({r['pr_url']})" if r["pr_url"] else r["pr"]
+        merged = "✅" if r.get("pr_merged") not in ("-", None) else "-"
         lines.append(
             f"| {r['repo']} | {r['incident']} | {r['status']} | {conf} "
-            f"| {pr} | {r['pr_state']} | {r['fix_matches']} |")
+            f"| {pr} | {r['pr_state']} | {merged} | {r['fix_matches']} |")
     lines += [
         "",
-        f"**Fixes matching ground truth: {matched} / {len(REPOS)}**",
+        f"**Fixes matching ground truth: {matched} / {len(REPOS)} · auto-merged: {n_merged}**",
         "",
         "Raw data: `eval-results` artifact (incidents.json, sentinel logs, "
         "pod snapshots, pr-verification.txt).",
