@@ -83,18 +83,32 @@ def api(url, accept="application/vnd.github+json"):
 
 
 def load_incidents(art_dir):
-    """Map service name -> incident (most informative one wins)."""
+    """Map service name -> incident (most informative one wins).
+
+    incidents.json is newest-first (API sorts by updated_at DESC), so the
+    first row per service is the NEWEST. With the fix-service budget
+    (chart 1.7.7) a capped or already-attempted service records 'skipped'
+    incidents at re-detection time — a later 'skipped' must not shadow an
+    earlier real investigation (fix_proposed/failed with a PR behind it).
+    Rule: newest non-skipped wins; all-skipped -> newest skipped.
+    """
     out = {}
+    skipped = {}
     try:
         with open(os.path.join(art_dir, "incidents.json")) as f:
             data = json.load(f)
         # The Sentinel API marshals an empty incident list as JSON null.
         for inc in data or []:
             svc = (inc.get("cluster") or {}).get("service", "?")
-            if svc not in out:
+            if inc.get("status") == "skipped":
+                if svc not in skipped:
+                    skipped[svc] = inc
+            elif svc not in out:
                 out[svc] = inc
     except Exception:
         pass
+    for svc, inc in skipped.items():
+        out.setdefault(svc, inc)
     return out
 
 
