@@ -6,7 +6,7 @@
 image:
   registry: "docker.io/karimzakzouk"
   repository: "sentinel"
-  tag: "1.7.11"
+  tag: "1.7.12"
   pullPolicy: Always
 
 sentinel:
@@ -49,6 +49,25 @@ sentinel:
     maxPerHour: 5
     cooldownMin: 10
     minSandboxLevel: 3
+    # v1.7.12 CI-failure feedback loop: red CI feeds the failing test
+    # output back to the fix proposer, which pushes a corrected commit to
+    # the same branch (CI re-runs). Run #26: shipping-api's fix stopped
+    # the crash but broke the blank-zip contract test — the PR just sat
+    # there until the harness closed it.
+    ciRetries: 2
+
+  # v1.7.12 post-deploy health check: after a merge, watch the deployed
+  # pods (restarts / OOMKills / readiness) and auto-revert on regression.
+  # Catches fixes that pass the no-traffic sandbox but fail under real
+  # load (run #26 user-api: tokenStore leak OOM-looped the deployed pods
+  # while the canary, idle, sailed through L1-L5).
+  # regressionCooldown=false — one bad merge must not pause the OTHER
+  # services' merges for the eval's whole window.
+  postDeployCheck:
+    enabled: true
+    durationSec: 420
+    regressionCooldown: false
+    revertAutoMerge: true
 
   # L2 safe-actions (immediate remediation)
   safeActions:
