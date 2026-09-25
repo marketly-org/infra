@@ -597,6 +597,15 @@ esac
 if [ -n "${OPENROUTER_API_KEY:-}" ]; then
   OR_PRIO=$(( ${#POOL_ENTRIES[@]} + 1 ))
   POOL_ENTRIES+=("{\"id\":\"openrouter-overflow\",\"provider\":\"openrouter\",\"apiKey\":\"$OPENROUTER_API_KEY\",\"fastModel\":\"inclusionai/ling-3.0-flash-fin:free\",\"frontierModel\":\"inclusionai/ling-3.0-flash-fin:free\",\"priority\":$OR_PRIO}")
+  # 4th entry: second OR free model on a SEPARATE ~50-req/day budget, so
+  # the overflow bench survives one model's daily cap + its 429 windows.
+  # ling-3.0-flash-sante:free — same 2026-09-25 bench, 2/2 on the real
+  # run-#12 prompts, 4.0s/25.2s. Different family than nemotron (whose
+  # ultra variant "passed" at 0.4s — fast enough to smell like junk
+  # completions that happen to parse). Only reached when fin's breaker
+  # is open, i.e. every entry above it is already failing.
+  OR2_PRIO=$(( ${#POOL_ENTRIES[@]} + 1 ))
+  POOL_ENTRIES+=("{\"id\":\"openrouter-overflow-2\",\"provider\":\"openrouter\",\"apiKey\":\"$OPENROUTER_API_KEY\",\"fastModel\":\"inclusionai/ling-3.0-flash-sante:free\",\"frontierModel\":\"inclusionai/ling-3.0-flash-sante:free\",\"priority\":$OR2_PRIO}")
 fi
 PROVIDERS_SETS=()
 if [ "${#POOL_ENTRIES[@]}" -gt 1 ]; then
