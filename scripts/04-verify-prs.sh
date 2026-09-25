@@ -84,7 +84,10 @@ else:
 
   # Check if the diff contains the expected fix pattern
   EXPECTED="${EXPECTED_FIX[$REPO]}"
-  if echo "$DIFF" | grep -qE "$EXPECTED"; then
+  # here-string is file-backed in bash: grep -q may exit at the first match
+  # without SIGPIPEing a producer (echo|grep -q under pipefail false-negatives
+  # on large diffs). GNU grep -E semantics preserved for the patterns (\s etc.)
+  if grep -qE "$EXPECTED" <<<"$DIFF"; then
     MATCH="✓ YES"
     MATCHED=$((MATCHED + 1))
   else

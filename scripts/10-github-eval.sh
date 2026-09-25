@@ -637,17 +637,23 @@ echo "  sentinel deadlines: fix-proposer 900s, investigation 1200s"
 
   # Image/chart drift guard: the pod's self-reported version must equal the
   # chart version (values-file tag drift once silently ran an old binary).
+  # NOTE: never `kubectl logs | grep -q` under `set -o pipefail` — grep -q
+  # exits at the FIRST match while kubectl is still streaming, kubectl dies
+  # on SIGPIPE (141), and pipefail fails the pipeline: the gate reports
+  # "absent" for a line that IS present (run #18: 1.7.5 confirmed in the
+  # log, gate FATALed 5/5). Capture first, match in bash — no pipes.
   VER_OK=""
-  for _ in 1 2 3 4 5; do
+  BOOT_LOGS=""
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
     sleep 2
-    if kubectl -n sentinel logs deploy/sentinel 2>/dev/null \
-        | grep -q "\"version\":\"$SENTINEL_CHART_VERSION\""; then
+    BOOT_LOGS="$(kubectl -n sentinel logs deploy/sentinel 2>/dev/null || true)"
+    if [[ "$BOOT_LOGS" == *"\"version\":\"$SENTINEL_CHART_VERSION\""* ]]; then
       VER_OK="yes"; break
     fi
   done
   if [ -z "$VER_OK" ]; then
     echo "  FATAL: sentinel pod is not running binary $SENTINEL_CHART_VERSION:"
-    kubectl -n sentinel logs deploy/sentinel 2>/dev/null | grep -o 'version":"[^"]*' | head -1
+    printf '%s\n' "$BOOT_LOGS" | grep -o 'version":"[^"]*' | head -1 || true
     echo "  (image tag drift — check --set image.tag and the values file)"
     exit 1
   fi
@@ -665,8 +671,8 @@ echo "  sentinel deadlines: fix-proposer 900s, investigation 1200s"
 # live deployment and repair directly if the env is missing. A direct
 # kubectl set env bypasses helm values entirely.
 if [ -n "$PROVIDERS_SET_JSON" ]; then
-  if kubectl -n sentinel get deploy sentinel -o jsonpath='{.spec.template.spec.containers[0].env[*].name}' 2>/dev/null \
-      | tr ' ' '\n' | grep -qx SENTINEL_LLM_PROVIDERS; then
+  ENV_NAMES="$(kubectl -n sentinel get deploy sentinel -o jsonpath='{.spec.template.spec.containers[0].env[*].name}' 2>/dev/null || true)"
+  if [[ " $ENV_NAMES " == *" SENTINEL_LLM_PROVIDERS "* ]]; then
     echo "  llm pool: env present in live deployment"
   else
     echo "  llm pool: env MISSING after install — patching directly"
@@ -681,7 +687,8 @@ if [ -n "$PROVIDERS_SET_JSON" ]; then
   POOL_OK=""
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     sleep 2
-    if kubectl -n sentinel logs deploy/sentinel 2>/dev/null | grep -q "failover pool enabled"; then
+    BOOT_LOGS="$(kubectl -n sentinel logs deploy/sentinel 2>/dev/null || true)"
+    if [[ "$BOOT_LOGS" == *"failover pool enabled"* ]]; then
       POOL_OK="yes"; break
     fi
   done
