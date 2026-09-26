@@ -73,18 +73,23 @@ data:
           -H "Content-Type: application/json" \\
           -d '{"customer_email":"test@example.com","items":[{"sku":"WIDGET-001","quantity":1}],"shipping_address":"123 Main St"}' || true
         # payments-api: direct charges (the fake stripe key fails them;
-        # kept so the payments path stays warm)
+        # kept so the payments path stays warm). Run #28 post-mortem: the
+        # planted bug is the missing IdempotencyKey — a RETRY of the same
+        # order double-charges — but unique order_ids meant that path
+        # never fired. Reuse a rotating order_id pool so the same order
+        # is charged repeatedly.
         curl -sf -X POST "http://payments-api.${NS}:8080/charge" \\
           -H "Content-Type: application/json" \\
-          -d "{\"order_id\":\"ord-eval-\$id-\$(date +%s)\",\"customer_email\":\"test@example.com\",\"amount_cents\":1999,\"currency\":\"usd\"}" || true
+          -d "{\"order_id\":\"ord-eval-dup-\$(( \$(date +%s) % 8 ))\",\"customer_email\":\"test@example.com\",\"amount_cents\":1999,\"currency\":\"usd\"}" || true
         sleep 0.5
       done
     }
 
     # Race loop: the inventory oversell bug (SELECT then UPDATE, no
     # transaction) only fires when several reserves for the same SKU
-    # overlap at the availability boundary. Fire 6-wide bursts on a
-    # rotating SKU every 2s. Availability is replenished by the eval
+    # overlap at the availability boundary. Run #28: 3-wide bursts
+    # every 3s never overlapped at the boundary — fire 6-wide bursts
+    # every 1s on a rotating SKU. Availability is replenished by the eval
     # driver's periodic \`UPDATE products SET reserved=0\`.
     # NOTE: busybox ash — no arrays, no bashisms.
     racer() {
@@ -96,13 +101,13 @@ data:
           2) sku=WIDGET-001 ;;
         esac
         i=\$((i + 1))
-        for b in 1 2 3; do
+        for b in 1 2 3 4 5 6; do
           curl -sf -X POST "http://inventory-api.${NS}:8080/reserve" \\
             -H "Content-Type: application/json" \\
             -d "{\"sku\":\"\$sku\",\"quantity\":1}" || true &
         done
         wait
-        sleep 3
+        sleep 1
       done
     }
 
